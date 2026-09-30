@@ -136,30 +136,54 @@ def sample_points(footprint, spacing_m: float = 35.0, max_points: int = 9) -> li
     return [frame.point_to_lonlat(x, y) for x, y in pts]
 
 
-def fetch_building(client: "GoogleSolarClient", footprint, max_points: int = 9,
-                   spacing_m: float = 35.0, match_buffer_m: float = 10.0) -> GoogleInsights:
+def _share_on_footprint(ins: GoogleInsights, frame: LocalFrame, zone) -> float:
+    """Fraction of a Google building's panels (or its centre, if it has none)
+    that fall on our footprint."""
+    if ins.panels:
+        inside = sum(zone.contains(Point(*frame.point_to_local(p.lon, p.lat))) for p in ins.panels)
+        return inside / len(ins.panels)
+    if ins.center is not None:
+        return float(zone.contains(Point(*frame.point_to_local(*ins.center))))
+    return 0.0
+
+
+def fetch_building(client: "GoogleSolarClient", footprint, max_points: int = 9, spacing_m: float = 35.0,
+                   match_buffer_m: float = 10.0, min_share: float = 0.5) -> GoogleInsights:
     """Query Google at several points over a footprint and merge the distinct
-    buildings whose centres fall on (or within `match_buffer_m` of) it."""
+    buildings that mostly (>= `min_share` of their panels) sit on it.
+
+    If every lookup at MEDIUM quality returns 404 (no imagery that good), one
+    retry at LOW quality is made; the result is flagged by its imagery quality.
+    """
     frame = LocalFrame.for_geometry(footprint)
     zone = frame.to_local(footprint).buffer(match_buffer_m)
-    found: dict[str, GoogleInsights] = {}
-    errors = []
-    for lon, lat in sample_points(footprint, spacing_m, max_points):
-        try:
-            ins = GoogleInsights.from_response(client.building_insights(lat, lon))
-        except requests.HTTPError as exc:
-            errors.append(exc)
-            continue
-        if ins.name in found:
-            continue
-        if ins.center is not None and not zone.contains(Point(*frame.point_to_local(*ins.center))):
-            continue  # Google's closest building is a neighbour
-        found[ins.name] = ins
-    if not found:
-        if errors:
-            raise errors[0]
-        raise LookupError("Google found no building on this footprint")
-    return merge_insights(list(found.values()))
+    points = sample_points(footprint, spacing_m, max_points)
+    for quality in ("MEDIUM", "LOW"):
+        found: dict[str, GoogleInsights] = {}
+        errors: list[requests.HTTPError] = []
+        for lon, lat in points if quality == "MEDIUM" else points[:1]:
+            try:
+                ins = GoogleInsights.from_response(client.building_insights(lat, lon, required_quality=quality))
+            except requests.HTTPError as exc:
+                errors.append(exc)
+                continue
+            if ins.name not in found and _share_on_footprint(ins, frame, zone) >= min_share:
+                found[ins.name] = ins
+        if found:
+            return merge_insights(list(found.values()))
+        if not errors or any(_status(e) != 404 for e in errors):
+            break
+    if errors:
+        raise GoogleLookupError(f"http_{_status(errors[0])}") from errors[0]
+    raise GoogleLookupError("no_google_building_on_footprint")
+
+
+def _status(exc: requests.HTTPError) -> int | None:
+    return exc.response.status_code if exc.response is not None else None
+
+
+class GoogleLookupError(RuntimeError):
+    """Google returned nothing usable for a footprint; str() is a short reason code."""
 
 
 class GoogleSolarClient:

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from .calibration import Calibrator, segment_key
 from .models import Building, SizingResult
 from .sizing import GeometricEstimator
-from .sources.google_solar import GoogleFilteredEstimator, GoogleInsights, GoogleSolarClient, fetch_building
+from .sources.google_solar import GoogleFilteredEstimator, GoogleInsights, GoogleLookupError, GoogleSolarClient, fetch_building
 
 
 @dataclass(frozen=True)
@@ -141,6 +141,8 @@ def estimate_many(
         def fetch(i):
             try:
                 insights[i] = fetch_building(google_client, buildings[i].footprint, google_max_points)
+            except GoogleLookupError as exc:
+                errors[i] = str(exc)
             except Exception as exc:  # recorded per building; one bad lookup must not stop a batch
                 errors[i] = type(exc).__name__
         with ThreadPoolExecutor(max_workers=workers) as pool:

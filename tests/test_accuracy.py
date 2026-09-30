@@ -4,7 +4,7 @@ import pytest
 
 from rooftop_solar import cli
 from rooftop_solar.accuracy import _best_error, load_truth
-from rooftop_solar.sources.google_solar import GoogleSolarClient
+from rooftop_solar.sources.google_solar import GoogleLookupError, GoogleSolarClient
 
 from .helpers import FRAME, ll
 
@@ -86,7 +86,7 @@ def test_fetch_building_merges_split_buildings_and_skips_neighbours():
     class FakeClient:
         calls = 0
 
-        def building_insights(self, lat, lon):
+        def building_insights(self, lat, lon, required_quality="MEDIUM"):
             self.calls += 1
             x, _ = FRAME.point_to_local(lon, lat)
             if x < 60:
@@ -105,11 +105,43 @@ def test_fetch_building_merges_split_buildings_and_skips_neighbours():
     assert {p.segment_index for p in merged.panels} == {0, 1}
 
     class NeighbourClient(FakeClient):
-        def building_insights(self, lat, lon):
-            r = super().building_insights(lat, lon)
-            clon, clat = FRAME.point_to_lonlat(500, 500)  # far away
-            r["center"] = {"latitude": clat, "longitude": clon}
+        def building_insights(self, lat, lon, required_quality="MEDIUM"):
+            clon, clat = FRAME.point_to_lonlat(500, 500)  # a building far away
+            r = _fake_insights(clat, clon)
+            r["name"] = "buildings/neighbour"
             return r
 
-    with pytest.raises(LookupError):
+    with pytest.raises(GoogleLookupError, match="no_google_building"):
         fetch_building(NeighbourClient(), fp)
+
+
+def test_fetch_building_retries_low_quality_after_404s():
+    import requests
+    from rooftop_solar.sources.google_solar import fetch_building
+    from .helpers import lonlat_box
+
+    fp = lonlat_box(0, 0, 40, 40)
+    seen = []
+
+    class Client:
+        def building_insights(self, lat, lon, required_quality="MEDIUM"):
+            seen.append(required_quality)
+            if required_quality == "MEDIUM":
+                resp = requests.Response()
+                resp.status_code = 404
+                raise requests.HTTPError(response=resp)
+            r = _fake_insights(lat, lon)
+            r["imageryQuality"] = "LOW"
+            return r
+
+    ins = fetch_building(Client(), fp)
+    assert seen[-1] == "LOW" and ins.imagery_quality == "LOW"
+
+    class Always403:
+        def building_insights(self, lat, lon, required_quality="MEDIUM"):
+            resp = requests.Response()
+            resp.status_code = 403
+            raise requests.HTTPError(response=resp)
+
+    with pytest.raises(GoogleLookupError, match="http_403"):
+        fetch_building(Always403(), fp)
