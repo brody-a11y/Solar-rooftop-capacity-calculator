@@ -42,6 +42,14 @@ Drawing roofs yourself in Google Earth (optional, for single sites)
   Skylight, Hatch, Standpipe or Smoke vent are treated as obstructions;
   "plane 6/12 S" marks a pitched roof face. See README.md for details.
 
+Checking accuracy against your own designs
+- Double-click "Accuracy Test.command" and drag in a truth file: either
+  truth_drive.json from accuracy_test.zip, or a CSV with columns
+  name, address, latitude, longitude, true_kw, module_w (one row per design).
+- It prints each site's result with and without Google roof data and writes
+  <name>_accuracy.csv plus a .kml you can open in Google Earth to check that
+  the right buildings were matched.
+
 Optional
 - Calibration: put calibration.json in the same folder as your buildings file
   and it is applied automatically.

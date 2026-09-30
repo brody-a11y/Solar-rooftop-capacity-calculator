@@ -128,6 +128,34 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_accuracy(args: argparse.Namespace) -> int:
+    from .accuracy import compare, load_truth, summary, truth_sites
+
+    geometric, calibrator, client = _setup(args)
+    truth = load_truth(args.truth)
+    sites = truth_sites(truth)
+    geocoder = None
+    if any(s.lat is None for s in sites):
+        key = os.environ.get(args.google_key_env) if args.geocoder == "google" else None
+        geocoder = Geocoder("google", key) if key else Geocoder("auto")
+    outcomes = size_sites(
+        sites, OvertureFootprints(workers=args.workers), geometric, geocoder, client, calibrator,
+        ReviewPolicy(), search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
+    )
+    rows = compare(truth, outcomes, geometric.design.module.watts_dc)
+    _write_csv(rows, args.out, "site")
+    if args.layouts:
+        write_layouts([e.primary for o in outcomes for e in o.estimates if e.primary], args.layouts)
+    print()
+    for r in rows:
+        print(f"{r['site'][:28]:28} designs {r['designs_kw'][:26]:26} tool {str(r['tool_kw']):>8} {r['tool_err']:>6}"
+              f"   google {str(r['google_kw']):>8} {r['google_err']:>6}   footprint {str(r['footprint_only_kw']):>8} {r['footprint_only_err']:>6}")
+    print()
+    print(summary(rows))
+    print(f"\nFull report: {args.out}")
+    return 0
+
+
 def _samples(results_path: str, truth_path: str, raw: bool) -> tuple[list[Sample], list[dict]]:
     truth = {r["building_id"]: float(r["true_kw"]) for r in _read_csv(truth_path) if r.get("true_kw")}
     rows = [r for r in _read_csv(results_path) if r["building_id"] in truth]
@@ -202,6 +230,15 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument("--campus-radius-m", type=float, default=0.0,
                     help="also size every building within this radius (multi-building properties); 0 = one building")
     ss.set_defaults(func=cmd_size_sites)
+
+    a = sub.add_parser("accuracy", parents=[design], help="compare against known max-fit designs")
+    a.add_argument("--truth", required=True, help="truth JSON or CSV (name, address, latitude, longitude, true_kw, module_w)")
+    a.add_argument("--out", required=True, help="report CSV")
+    a.add_argument("--layouts", help="optional KML of roofs and panels for checking matches in Google Earth")
+    a.add_argument("--geocoder", choices=["auto", "google"], default="auto")
+    a.add_argument("--search-m", type=float, default=40.0)
+    a.add_argument("--campus-radius-m", type=float, default=0.0)
+    a.set_defaults(func=cmd_accuracy)
 
     c = sub.add_parser("calibrate", help="fit correction factors against real designs")
     c.add_argument("--results", required=True, help="CSV from `size`")

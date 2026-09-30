@@ -14,3 +14,8 @@ def lonlat_box(x0, y0, x1, y1):
 def centered_box_ft(width_ft, depth_ft):
     w, d = width_ft * 0.3048, depth_ft * 0.3048
     return lonlat_box(-w / 2, -d / 2, w / 2, d / 2)
+
+
+def ll(x, y):
+    """Local metres -> (lon, lat)."""
+    return FRAME.point_to_lonlat(x, y)

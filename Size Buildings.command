@@ -32,7 +32,10 @@ DIR="$(dirname "$IN")"
 BASE="$(basename "$IN")"
 BASE="${BASE%.*}"
 case "$(printf '%s' "$IN" | tr '[:upper:]' '[:lower:]')" in
-  *.csv) ARGS=(size-sites --sites "$IN") ;;
+  *.csv)
+    ARGS=(size-sites --sites "$IN")
+    [ -s "$HOME_DIR/google_api_key" ] && ARGS+=(--geocoder google)
+    ;;
   *) ARGS=(size --buildings "$IN") ;;
 esac
 ARGS+=(--out "$DIR/${BASE}_results.csv" --layouts "$DIR/${BASE}_layouts.kml")
