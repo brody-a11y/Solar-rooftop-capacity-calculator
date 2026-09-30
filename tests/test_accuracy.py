@@ -65,16 +65,24 @@ def test_accuracy_command_with_google(tmp_path, footprints, monkeypatch):
     assert float(row["google_unclipped_kw"]) >= float(row["google_kw"])
 
 
-def test_sample_points_spread_over_large_footprint():
-    from rooftop_solar.sources.google_solar import sample_points
-    from .helpers import lonlat_box
+def test_fetch_building_reaches_both_wings_of_an_l_shape():
+    from shapely.geometry import box as sbox
+    from rooftop_solar.sources.google_solar import fetch_building
 
-    fp = lonlat_box(0, 0, 200, 100)
-    pts = sample_points(fp, spacing_m=35, max_points=9)
-    assert len(pts) == 9
-    local = [FRAME.point_to_local(*p) for p in pts]
-    assert all(0 < x < 200 and 0 < y < 100 for x, y in local)
-    assert len(sample_points(lonlat_box(0, 0, 20, 20), max_points=9)) == 1
+    # L-shape: a 100 x 15 m east-west wing and a 15 x 100 m north-south wing
+    fp = FRAME.to_lonlat(sbox(0, 0, 100, 15).union(sbox(0, 0, 15, 100)))
+
+    class WingClient:
+        def building_insights(self, lat, lon, required_quality="MEDIUM"):
+            x, y = FRAME.point_to_local(lon, lat)
+            name, (cx, cy) = ("buildings/east-wing", (60, 7)) if x > y else ("buildings/north-wing", (7, 60))
+            clon, clat = FRAME.point_to_lonlat(cx, cy)
+            r = _fake_insights(clat, clon)
+            r["name"], r["center"] = name, {"latitude": clat, "longitude": clon}
+            return r
+
+    merged = fetch_building(WingClient(), fp, max_points=9)
+    assert merged.buildings_merged == 2
 
 
 def test_fetch_building_merges_split_buildings_and_skips_neighbours():
@@ -173,3 +181,22 @@ def test_site_without_mapped_building_falls_back_to_google(tmp_path, footprints,
     assert "footprint_from_google_imagery_check_date" in row["reasons"]
     assert float(row["google_kw"]) > 0
     assert row["google_imagery_date"] == "2025-01-01"
+
+
+def test_google_fallback_ignores_tiny_structures(tmp_path, footprints, monkeypatch):
+    def shed(self, lat, lon, required_quality="MEDIUM"):
+        r = _fake_insights(lat, lon)
+        r["solarPotential"]["solarPanels"] = r["solarPotential"]["solarPanels"][:6]
+        return r
+
+    monkeypatch.setattr(cli, "OvertureFootprints", lambda **kw: footprints)
+    monkeypatch.setattr(GoogleSolarClient, "building_insights", shed)
+    monkeypatch.setenv("GOOGLE_SOLAR_API_KEY", "test")
+    lon, lat = ll(900, 900)
+    truth = tmp_path / "truth.csv"
+    truth.write_text(f"name,address,latitude,longitude,true_kw,module_w\nNew build,,{lat},{lon},20,550\n")
+    out = tmp_path / "acc.csv"
+    assert cli.main(["accuracy", "--truth", str(truth), "--out", str(out), "--google", "--google-cache", str(tmp_path / "gc"), "--workers", "1"]) == 0
+    with out.open() as f:
+        row = list(csv.DictReader(f))[0]
+    assert "no_building_within_40m" in row["reasons"] and row["tool_kw"] == ""

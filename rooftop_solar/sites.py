@@ -146,12 +146,14 @@ class SiteOutcome:
         return rows
 
 
-def _google_footprint(o: SiteOutcome, client: GoogleSolarClient) -> FootprintMatch | None:
+def _google_footprint(o: SiteOutcome, client: GoogleSolarClient, min_panels: int = 40) -> FootprintMatch | None:
     """Google's building at the site's point, for buildings the footprint data
     doesn't have yet (usually new construction)."""
     try:
         ins = GoogleInsights.from_response(client.building_insights(o.geocode.lat, o.geocode.lon))
     except Exception:  # no Google building either; reported as no_building_within
+        return None
+    if len(ins.panels) < min_panels:  # a shed or carport, not the property
         return None
     fp = footprint_from_insights(ins)
     if fp is None:

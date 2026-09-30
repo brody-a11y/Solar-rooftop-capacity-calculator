@@ -16,7 +16,7 @@ from pathlib import Path
 
 import requests
 from shapely import affinity
-from shapely.geometry import Point, box
+from shapely.geometry import Point, Polygon, box
 from shapely.ops import unary_union
 
 from ..geometry import LocalFrame, polygons
@@ -150,31 +150,6 @@ def merge_insights(parts: list[GoogleInsights]) -> GoogleInsights:
     )
 
 
-def sample_points(footprint, spacing_m: float = 35.0, max_points: int = 9) -> list[tuple[float, float]]:
-    """(lon, lat) query points spread over a footprint: its representative point,
-    then a grid of interior points, thinned evenly to at most `max_points`."""
-    frame = LocalFrame.for_geometry(footprint)
-    local = frame.to_local(footprint)
-    rp = local.representative_point()
-    pts = [(rp.x, rp.y)]
-    minx, miny, maxx, maxy = local.bounds
-    grid = []
-    y = miny + spacing_m / 2
-    while y < maxy:
-        x = minx + spacing_m / 2
-        while x < maxx:
-            if local.contains(Point(x, y)) and math.hypot(x - rp.x, y - rp.y) > spacing_m / 2:
-                grid.append((x, y))
-            x += spacing_m
-        y += spacing_m
-    room = max_points - 1
-    if len(grid) > room > 0:
-        step = len(grid) / room
-        grid = [grid[int(i * step)] for i in range(room)]
-    pts.extend(grid[: max(room, 0)])
-    return [frame.point_to_lonlat(x, y) for x, y in pts]
-
-
 def _share_on_footprint(ins: GoogleInsights, frame: LocalFrame, zone) -> float:
     """Fraction of a Google building's panels (or its centre, if it has none)
     that fall on our footprint."""
@@ -186,26 +161,66 @@ def _share_on_footprint(ins: GoogleInsights, frame: LocalFrame, zone) -> float:
     return 0.0
 
 
-def fetch_building(client: "GoogleSolarClient", footprint, max_points: int = 9, spacing_m: float = 35.0,
-                   match_buffer_m: float = 10.0, min_share: float = 0.5) -> GoogleInsights:
-    """Query Google at several points over a footprint and merge the distinct
-    buildings that mostly (>= `min_share` of their panels) sit on it.
+def _candidate_points(local, spacing_m: float = 8.0) -> list[tuple[float, float]]:
+    """Interior grid points of a local-frame footprint, representative point first."""
+    rp = local.representative_point()
+    inner = local.buffer(-2.0)
+    if inner.is_empty:
+        inner = local
+    minx, miny, maxx, maxy = local.bounds
+    pts = [(rp.x, rp.y)]
+    y = miny + spacing_m / 2
+    while y < maxy:
+        x = minx + spacing_m / 2
+        while x < maxx:
+            if inner.contains(Point(x, y)):
+                pts.append((x, y))
+            x += spacing_m
+        y += spacing_m
+    return pts
 
-    If every lookup at MEDIUM quality returns 404 (no imagery that good), one
-    retry at LOW quality is made; the result is flagged by its imagery quality.
+
+def fetch_building(client: "GoogleSolarClient", footprint, max_points: int = 9, match_buffer_m: float = 10.0,
+                   min_share: float = 0.5, cover_m: float = 6.0) -> GoogleInsights:
+    """Query Google over a footprint and merge the distinct buildings that mostly
+    (>= `min_share` of their panels) sit on it.
+
+    Google often splits one large or L-shaped building into several entries, so
+    lookups are adaptive: after each one, the area covered by the returned
+    building's panels is marked done, and the next lookup goes to the uncovered
+    point farthest from earlier lookups. At most `max_points` lookups are made.
+    If every MEDIUM-quality lookup returns 404, one LOW-quality retry is made.
     """
     frame = LocalFrame.for_geometry(footprint)
-    zone = frame.to_local(footprint).buffer(match_buffer_m)
-    points = sample_points(footprint, spacing_m, max_points)
+    local = frame.to_local(footprint)
+    zone = local.buffer(match_buffer_m)
+    candidates = _candidate_points(local)
+    errors: list[requests.HTTPError] = []
     for quality in ("MEDIUM", "LOW"):
         found: dict[str, GoogleInsights] = {}
-        errors: list[requests.HTTPError] = []
-        for lon, lat in points if quality == "MEDIUM" else points[:1]:
+        errors = []
+        covered = Polygon()
+        chosen: list[tuple[float, float]] = []
+        budget = max_points if quality == "MEDIUM" else 1
+        while len(chosen) < budget:
+            open_ = [c for c in candidates if not covered.contains(Point(c))]
+            if not open_:
+                break
+            pick = open_[0] if not chosen else max(
+                open_, key=lambda c: min(math.hypot(c[0] - q[0], c[1] - q[1]) for q in chosen))
+            chosen.append(pick)
+            lon, lat = frame.point_to_lonlat(*pick)
             try:
                 ins = GoogleInsights.from_response(client.building_insights(lat, lon, required_quality=quality))
             except requests.HTTPError as exc:
                 errors.append(exc)
+                covered = covered.union(Point(pick).buffer(cover_m * 2))
                 continue
+            done = Point(pick).buffer(cover_m * 2)
+            if ins.panels:
+                done = done.union(unary_union(
+                    [_panel_rect(ins, p, _segment(ins, p), frame) for p in ins.panels]).buffer(cover_m))
+            covered = covered.union(done)
             if ins.name not in found and _share_on_footprint(ins, frame, zone) >= min_share:
                 found[ins.name] = ins
         if found:
