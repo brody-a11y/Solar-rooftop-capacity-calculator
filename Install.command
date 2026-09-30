@@ -8,11 +8,20 @@ VENV="$HOME_DIR/venv"
 
 finish() { echo; read -r -p "Press Return to close this window. " _; exit "$1"; }
 
-PY="$(command -v python3)"
-if [ -z "$PY" ] || ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+# macOS ships Python 3.9 as `python3`, so look for a newer install by name and in
+# the places the python.org and Homebrew installers use.
+ok() { "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; }
+PY=""
+for c in python3.14 python3.13 python3.12 python3.11 python3.10 \
+         /Library/Frameworks/Python.framework/Versions/3.*/bin/python3 \
+         /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
+  p="$(command -v "$c" 2>/dev/null)"
+  if [ -n "$p" ] && ok "$p"; then PY="$p"; break; fi
+done
+if [ -z "$PY" ]; then
   echo "This needs Python 3.10 or newer."
   echo "Install it from https://www.python.org/downloads/ and then double-click Install again."
-  [ -n "$PY" ] && echo "(Found: $("$PY" --version 2>&1))"
+  command -v python3 >/dev/null && echo "(Found only: $(python3 --version 2>&1))"
   finish 1
 fi
 
