@@ -1,0 +1,112 @@
+"""Per-building pipeline: run estimators, cross-check them, calibrate, route to review.
+
+At scale the goal is not that every automated number is within 10%. It is that the
+ones auto-accepted are, and the rest are sent to a person. The cross-check between
+two independent methods is what makes that routing possible.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from .calibration import Calibrator, segment_key
+from .models import Building, SizingResult
+from .sizing import GeometricEstimator
+from .sources.google_solar import GoogleFilteredEstimator, GoogleInsights
+
+
+@dataclass(frozen=True)
+class ReviewPolicy:
+    """Starting thresholds. Tune them on your validation set: widen or narrow the
+    band until auto-accepted sites meet the accuracy target."""
+
+    # google_filtered / geometric. Geometric ignores unmapped clutter, so it should
+    # be an upper bound; a ratio above ~1 means the two methods disagree on the roof.
+    agree_low: float = 0.70
+    agree_high: float = 1.05
+    min_kw: float = 1.0
+
+
+@dataclass
+class SiteEstimate:
+    building_id: str
+    dc_kw: float
+    raw_kw: float
+    method: str
+    calibration_factor: float
+    calibration_source: str
+    agreement_ratio: float | None
+    needs_review: bool
+    reasons: list[str] = field(default_factory=list)
+    primary: SizingResult | None = None
+    geometric: SizingResult | None = None
+    google: SizingResult | None = None
+
+    def row(self, occupancy: str) -> dict:
+        p = self.primary
+        return {
+            "building_id": self.building_id,
+            "dc_kw": round(self.dc_kw, 2),
+            "raw_kw": round(self.raw_kw, 2),
+            "module_count": p.module_count if p else 0,
+            "method": self.method,
+            "segment": segment_key(self.method, occupancy, p.roof_type if p else ""),
+            "calibration_factor": round(self.calibration_factor, 4),
+            "calibration_source": self.calibration_source,
+            "geometric_kw": round(self.geometric.dc_kw, 2) if self.geometric else "",
+            "google_kw": round(self.google.dc_kw, 2) if self.google else "",
+            "agreement_ratio": round(self.agreement_ratio, 3) if self.agreement_ratio is not None else "",
+            "gross_roof_area_m2": round(p.gross_roof_area_m2, 1) if p else "",
+            "usable_area_m2": round(p.usable_area_m2, 1) if p else "",
+            "roof_type": p.roof_type if p else "",
+            "needs_review": self.needs_review,
+            "reasons": ";".join(self.reasons),
+            "flags": ";".join(p.flags) if p else "",
+        }
+
+
+def estimate_site(
+    building: Building,
+    geometric: GeometricEstimator,
+    google: GoogleFilteredEstimator | None = None,
+    insights: GoogleInsights | None = None,
+    calibrator: Calibrator | None = None,
+    policy: ReviewPolicy = ReviewPolicy(),
+) -> SiteEstimate:
+    reasons: list[str] = []
+    geo = geometric.estimate(building)
+    goo = google.estimate(building, insights) if google and insights else None
+
+    ratio = goo.dc_kw / geo.dc_kw if goo and geo.dc_kw > 0 else None
+    google_usable = goo is not None and goo.module_count > 0 and not any(f.startswith("imagery_quality_") for f in goo.flags)
+    if google_usable:
+        primary = goo
+        if ratio is not None and not (policy.agree_low <= ratio <= policy.agree_high):
+            reasons.append(f"methods_disagree_ratio_{ratio:.2f}")
+    else:
+        primary = geo
+        if goo is not None:
+            reasons.append("google_unusable:" + ",".join(goo.flags or ["zero_panels"]))
+        if not building.obstructions_mapped:
+            reasons.append("single_method_no_obstruction_data")
+
+    factor, source = (calibrator.factor_for(segment_key(primary.method, building.occupancy.value, primary.roof_type)) if calibrator else (1.0, "none"))
+    if source == "none":
+        reasons.append("uncalibrated")
+    if primary.dc_kw < policy.min_kw:
+        reasons.append("no_usable_roof_area")
+
+    return SiteEstimate(
+        building_id=building.id,
+        dc_kw=primary.dc_kw * factor,
+        raw_kw=primary.dc_kw,
+        method=primary.method,
+        calibration_factor=factor,
+        calibration_source=source,
+        agreement_ratio=ratio,
+        needs_review=bool(reasons),
+        reasons=reasons,
+        primary=primary,
+        geometric=geo,
+        google=goo,
+    )

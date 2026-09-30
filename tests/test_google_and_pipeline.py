@@ -1,0 +1,130 @@
+import csv
+import json
+import random
+
+import pytest
+
+from rooftop_solar import Building, DesignConfig, GeometricEstimator, Module, Occupancy, Racking
+from rooftop_solar.calibration import Calibrator, Sample, accuracy, cross_validate
+from rooftop_solar.cli import main
+from rooftop_solar.models import FT
+from rooftop_solar.pipeline import estimate_site
+from rooftop_solar.sources.google_solar import GoogleFilteredEstimator, GoogleInsights
+
+from .helpers import FRAME, centered_box_ft
+
+W_M, D_M = 200 * FT, 100 * FT
+
+
+def google_response(margin_m=0.0, pitch=2.0):
+    """Panels tiled edge to edge over the 200 x 100 ft roof, like an unconstrained layout."""
+    ph, pw = 1.879, 1.045  # Google's default panel
+    panels = []
+    y = -D_M / 2 + margin_m + pw / 2
+    while y + pw / 2 <= D_M / 2 - margin_m:
+        x = -W_M / 2 + margin_m + ph / 2
+        while x + ph / 2 <= W_M / 2 - margin_m:
+            lon, lat = FRAME.point_to_lonlat(x, y)
+            panels.append({"center": {"latitude": lat, "longitude": lon}, "orientation": "LANDSCAPE", "segmentIndex": 0})
+            x += ph
+        y += pw
+    return {
+        "imageryQuality": "HIGH",
+        "imageryDate": {"year": 2025, "month": 6, "day": 1},
+        "solarPotential": {
+            "maxArrayPanelsCount": len(panels),
+            "panelCapacityWatts": 400,
+            "panelHeightMeters": ph,
+            "panelWidthMeters": pw,
+            "roofSegmentStats": [{"pitchDegrees": pitch, "azimuthDegrees": 180.0}],
+            "solarPanels": panels,
+        },
+    }
+
+
+def test_google_filter_drops_panels_in_fire_pathways():
+    b = Building("a", centered_box_ft(200, 100), Occupancy.COMMERCIAL)
+    ins = GoogleInsights.from_response(google_response())
+    est = GoogleFilteredEstimator(GeometricEstimator(design=DesignConfig(flat_racking=Racking.FLUSH)))
+    r = est.estimate(b, ins)
+    total, kept = r.details["google_panels_total"], r.details["google_panels_kept"]
+    assert 0 < kept < total
+    # usable area is (192 x 92 ft) minus a 4 ft x 92 ft gap; kept panels cannot exceed it
+    usable = (192 * 92 - 4 * 92) * FT * FT
+    assert kept * 1.879 * 1.045 <= usable
+    assert r.module_count == int(kept * 1.879 * 1.045 // Module().area_m2)
+
+
+def test_google_flat_density_applies_racking_gcr():
+    b = Building("a", centered_box_ft(200, 100), Occupancy.COMMERCIAL)
+    ins = GoogleInsights.from_response(google_response())
+    flush = GoogleFilteredEstimator(GeometricEstimator(design=DesignConfig(flat_racking=Racking.FLUSH))).estimate(b, ins)
+    ew = GoogleFilteredEstimator(GeometricEstimator(design=DesignConfig(east_west_gcr=0.9))).estimate(b, ins)
+    assert ew.module_count == pytest.approx(flush.module_count * 0.9, abs=1)
+
+
+def test_pipeline_prefers_google_and_flags_disagreement():
+    b = Building("a", centered_box_ft(200, 100), Occupancy.COMMERCIAL)
+    geo = GeometricEstimator(design=DesignConfig(flat_racking=Racking.FLUSH))
+    goo = GoogleFilteredEstimator(geo)
+
+    agree = estimate_site(b, geo, goo, GoogleInsights.from_response(google_response()))
+    assert agree.method == "google_filtered"
+    assert not any(r.startswith("methods_disagree") for r in agree.reasons)
+
+    # Google sees a mostly cluttered roof: only a central patch of panels
+    sparse = GoogleInsights.from_response(google_response(margin_m=12.0))
+    disagree = estimate_site(b, geo, goo, sparse)
+    assert any(r.startswith("methods_disagree") for r in disagree.reasons)
+    assert disagree.needs_review
+
+
+def test_pipeline_falls_back_to_geometric_on_low_imagery():
+    b = Building("a", centered_box_ft(200, 100), Occupancy.COMMERCIAL)
+    geo = GeometricEstimator(design=DesignConfig(flat_racking=Racking.FLUSH))
+    resp = google_response()
+    resp["imageryQuality"] = "LOW"
+    est = estimate_site(b, geo, GoogleFilteredEstimator(geo), GoogleInsights.from_response(resp))
+    assert est.method == "geometric"
+    assert est.needs_review
+
+
+def test_calibration_removes_bias_out_of_sample():
+    rng = random.Random(0)
+    samples = []
+    for _ in range(60):
+        true = rng.uniform(50, 800)
+        samples.append(Sample("geometric|R-2|flat", true * 1.25 * rng.uniform(0.95, 1.05), true))
+    raw = accuracy([s.predicted_kw for s in samples], [s.true_kw for s in samples])
+    cv = cross_validate(samples)
+    assert raw["within_10pct"] == 0.0
+    assert cv["within_10pct"] > 0.95
+    cal = Calibrator().fit(samples)
+    assert cal.factor_for("geometric|R-2|flat") == (pytest.approx(0.8, abs=0.02), "segment")
+    assert cal.factor_for("unknown")[1] == "global"
+
+
+def test_cli_size_calibrate_evaluate(tmp_path):
+    fp = centered_box_ft(200, 100)
+    feats = [
+        {"type": "Feature", "geometry": json.loads(json.dumps(fp.__geo_interface__)), "properties": {"id": f"b{i}", "occupancy": "commercial"}}
+        for i in range(6)
+    ]
+    bpath = tmp_path / "b.geojson"
+    bpath.write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
+    out = tmp_path / "r.csv"
+    assert main(["size", "--buildings", str(bpath), "--out", str(out), "--layouts", str(tmp_path / "l.geojson")]) == 0
+    rows = list(csv.DictReader(open(out)))
+    assert len(rows) == 6 and float(rows[0]["dc_kw"]) > 0
+
+    truth = tmp_path / "t.csv"
+    with open(truth, "w") as f:
+        f.write("building_id,true_kw\n")
+        for i, r in enumerate(rows):
+            f.write(f"{r['building_id']},{float(r['raw_kw']) * (0.85 + 0.01 * i)}\n")
+    cal = tmp_path / "cal.json"
+    assert main(["calibrate", "--results", str(out), "--truth", str(truth), "--out", str(cal)]) == 0
+    assert main(["size", "--buildings", str(bpath), "--out", str(out), "--calibration", str(cal)]) == 0
+    rows = list(csv.DictReader(open(out)))
+    assert rows[0]["calibration_source"] == "segment"
+    assert main(["evaluate", "--results", str(out), "--truth", str(truth)]) == 0
