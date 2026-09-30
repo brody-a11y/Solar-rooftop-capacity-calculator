@@ -62,3 +62,4 @@ def test_accuracy_command_with_google(tmp_path, footprints, monkeypatch):
     assert row["google_kw"] and float(row["google_kw"]) > 0
     assert row["footprint_only_kw"] and float(row["footprint_only_kw"]) > float(row["google_kw"])
     assert row["tool_kw"] == row["google_kw"]  # Google result is primary when usable
+    assert float(row["google_unclipped_kw"]) >= float(row["google_kw"])

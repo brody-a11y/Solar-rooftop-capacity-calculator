@@ -66,13 +66,14 @@ def compare(truth: dict[str, dict], outcomes: list[SiteOutcome], module_w: float
         final = sum(e.dc_kw for e in est)
         geo = sum(e.geometric.dc_kw for e in est if e.geometric)
         goo = sum(e.google.dc_kw for e in est if e.google) if any(e.google for e in est) else None
+        raw = sum(e.google.details.get("google_unclipped_kw", 0) for e in est if e.google) if goo is not None else None
         row = {
             "site": name,
             "designs_kw": " / ".join(f"{d['kw']:g}" + (f"@{d['module_w']:g}W" if d.get("module_w") else "") for d in t["truths"]),
             "buildings_found": len(o.buildings) if o else 0,
             "location": f"{o.geocode.source}:{o.geocode.precision}" if o and o.geocode else "",
         }
-        for label, kw in (("tool", final), ("footprint_only", geo), ("google", goo)):
+        for label, kw in (("tool", final), ("footprint_only", geo), ("google", goo), ("google_unclipped", raw)):
             if kw:
                 err, _ = _best_error(kw, t["truths"], module_w)
                 row[f"{label}_kw"] = round(kw, 1)
@@ -87,8 +88,8 @@ def compare(truth: dict[str, dict], outcomes: list[SiteOutcome], module_w: float
 
 def summary(rows: list[dict], tolerance: float = 0.10) -> str:
     lines = []
-    for label in ("tool", "footprint_only", "google"):
+    for label in ("tool", "footprint_only", "google", "google_unclipped"):
         sized = [r for r in rows if r[f"{label}_kw"] != ""]
         hits = sum(1 for r in sized if r[f"{label}_within"])
-        lines.append(f"{label:15} {hits} of {len(sized)} sized sites within ±{tolerance:.0%} ({len(rows) - len(sized)} not sized)")
+        lines.append(f"{label:17} {hits} of {len(sized)} sized sites within ±{tolerance:.0%} ({len(rows) - len(sized)} not sized)")
     return "\n".join(lines)

@@ -147,9 +147,10 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
     if args.layouts:
         write_layouts([e.primary for o in outcomes for e in o.estimates if e.primary], args.layouts)
     print()
+    print(f"{'site':20} {'designs kW':16} {'google':>13} {'unclipped':>13} {'footprint':>13}")
     for r in rows:
-        print(f"{r['site'][:28]:28} designs {r['designs_kw'][:26]:26} tool {str(r['tool_kw']):>8} {r['tool_err']:>6}"
-              f"   google {str(r['google_kw']):>8} {r['google_err']:>6}   footprint {str(r['footprint_only_kw']):>8} {r['footprint_only_err']:>6}")
+        cells = [f"{str(r[k + '_kw']):>7} {r[k + '_err']:>5}" for k in ("google", "google_unclipped", "footprint_only")]
+        print(f"{r['site'][:20]:20} {r['designs_kw'][:16]:16} {' '.join(cells)}")
     print()
     print(summary(rows))
     print(f"\nFull report: {args.out}")

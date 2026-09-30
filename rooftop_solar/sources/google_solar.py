@@ -124,6 +124,7 @@ class GoogleFilteredEstimator:
         flat_threshold = design.flat_pitch_threshold_deg
 
         kept, kept_surface_m2, flat_surface_m2 = [], 0.0, 0.0
+        all_surface_m2 = all_flat_m2 = 0.0  # every Google panel, ignoring the code zone
         kinds = set()
         for p in insights.panels:
             seg = insights.segments[p.segment_index] if p.segment_index < len(insights.segments) else GoogleSegment(0, 180)
@@ -133,6 +134,10 @@ class GoogleFilteredEstimator:
                 across, down = insights.panel_width_m, insights.panel_height_m
             else:
                 across, down = insights.panel_height_m, insights.panel_width_m
+            is_flat = seg.pitch_deg < flat_threshold
+            all_surface_m2 += across * down
+            if is_flat:
+                all_flat_m2 += across * down
             x, y = frame.point_to_local(p.lon, p.lat)
             rect = box(-across / 2, -down * cos_p / 2, across / 2, down * cos_p / 2)
             rect = affinity.translate(affinity.rotate(rect, -seg.azimuth_deg, origin=(0, 0)), x, y)
@@ -141,7 +146,6 @@ class GoogleFilteredEstimator:
             kept.append(rect)
             area = across * down
             kept_surface_m2 += area
-            is_flat = seg.pitch_deg < flat_threshold
             kinds.add("flat" if is_flat else "pitched")
             if is_flat:
                 flat_surface_m2 += area
@@ -150,6 +154,10 @@ class GoogleFilteredEstimator:
         flat_density = self._flat_density(frame.lat0)
         effective_m2 = (kept_surface_m2 - flat_surface_m2) + flat_surface_m2 * flat_density
         count = int(effective_m2 // design.module.area_m2)
+        # Google's own maximum for the building it found, without fire-code
+        # pathways and not clipped to our footprint (which may be the wrong building).
+        unclipped_m2 = (all_surface_m2 - all_flat_m2) + all_flat_m2 * flat_density
+        unclipped_kw = int(unclipped_m2 // design.module.area_m2) * design.module.watts_dc / 1000.0
 
         flags = []
         if insights.imagery_quality not in ("HIGH", "MEDIUM"):
@@ -170,6 +178,7 @@ class GoogleFilteredEstimator:
             flags=flags,
             details={
                 "google_panels_total": len(insights.panels),
+                "google_unclipped_kw": unclipped_kw,
                 "google_panels_kept": len(kept),
                 "google_max_array_panels": insights.max_array_panels,
                 "imagery_quality": insights.imagery_quality,
