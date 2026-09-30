@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from .calibration import Calibrator, segment_key
 from .models import Building, SizingResult
 from .sizing import GeometricEstimator
-from .sources.google_solar import GoogleFilteredEstimator, GoogleInsights, GoogleSolarClient
+from .sources.google_solar import GoogleFilteredEstimator, GoogleInsights, GoogleSolarClient, fetch_building
 
 
 @dataclass(frozen=True)
@@ -131,6 +131,7 @@ def estimate_many(
     calibrator: Calibrator | None = None,
     policy: ReviewPolicy = ReviewPolicy(),
     workers: int = 8,
+    google_max_points: int = 9,
 ) -> list[SiteEstimate]:
     """Google lookups on threads (network-bound), sizing on processes (CPU-bound;
     threads contend on the GIL and run slower than one worker)."""
@@ -138,9 +139,8 @@ def estimate_many(
     errors: list[str | None] = [None] * len(buildings)
     if google_client:
         def fetch(i):
-            pt = buildings[i].footprint.representative_point()
             try:
-                insights[i] = GoogleInsights.from_response(google_client.building_insights(pt.y, pt.x))
+                insights[i] = fetch_building(google_client, buildings[i].footprint, google_max_points)
             except Exception as exc:  # recorded per building; one bad lookup must not stop a batch
                 errors[i] = type(exc).__name__
         with ThreadPoolExecutor(max_workers=workers) as pool:

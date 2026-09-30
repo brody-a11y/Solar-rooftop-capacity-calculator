@@ -63,3 +63,53 @@ def test_accuracy_command_with_google(tmp_path, footprints, monkeypatch):
     assert row["footprint_only_kw"] and float(row["footprint_only_kw"]) > float(row["google_kw"])
     assert row["tool_kw"] == row["google_kw"]  # Google result is primary when usable
     assert float(row["google_unclipped_kw"]) >= float(row["google_kw"])
+
+
+def test_sample_points_spread_over_large_footprint():
+    from rooftop_solar.sources.google_solar import sample_points
+    from .helpers import lonlat_box
+
+    fp = lonlat_box(0, 0, 200, 100)
+    pts = sample_points(fp, spacing_m=35, max_points=9)
+    assert len(pts) == 9
+    local = [FRAME.point_to_local(*p) for p in pts]
+    assert all(0 < x < 200 and 0 < y < 100 for x, y in local)
+    assert len(sample_points(lonlat_box(0, 0, 20, 20), max_points=9)) == 1
+
+
+def test_fetch_building_merges_split_buildings_and_skips_neighbours():
+    from rooftop_solar.sources.google_solar import fetch_building
+    from .helpers import lonlat_box
+
+    fp = lonlat_box(0, 0, 120, 40)
+
+    class FakeClient:
+        calls = 0
+
+        def building_insights(self, lat, lon):
+            self.calls += 1
+            x, _ = FRAME.point_to_local(lon, lat)
+            if x < 60:
+                name, cx = "buildings/west", 30
+            else:
+                name, cx = "buildings/east", 90
+            clon, clat = FRAME.point_to_lonlat(cx, 20)
+            r = _fake_insights(clat, clon)
+            r["name"], r["center"] = name, {"latitude": clat, "longitude": clon}
+            return r
+
+    client = FakeClient()
+    merged = fetch_building(client, fp, max_points=9)
+    assert merged.buildings_merged == 2
+    assert len(merged.panels) == 120 and len(merged.segments) == 2
+    assert {p.segment_index for p in merged.panels} == {0, 1}
+
+    class NeighbourClient(FakeClient):
+        def building_insights(self, lat, lon):
+            r = super().building_insights(lat, lon)
+            clon, clat = FRAME.point_to_lonlat(500, 500)  # far away
+            r["center"] = {"latitude": clat, "longitude": clon}
+            return r
+
+    with pytest.raises(LookupError):
+        fetch_building(NeighbourClient(), fp)

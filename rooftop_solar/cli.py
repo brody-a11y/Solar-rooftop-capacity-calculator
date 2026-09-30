@@ -82,7 +82,7 @@ def cmd_size(args: argparse.Namespace) -> int:
         print(f"Couldn't read {args.buildings}: {exc}", file=sys.stderr)
         return 2
 
-    estimates = estimate_many(buildings, geometric, client, calibrator, policy, args.workers)
+    estimates = estimate_many(buildings, geometric, client, calibrator, policy, args.workers, args.google_max_points)
     results = list(zip(buildings, estimates))
 
     rows = [est.row(b.occupancy.value) for b, est in results]
@@ -115,6 +115,7 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
     outcomes = size_sites(
         sites, footprints, geometric, geocoder, client, calibrator, ReviewPolicy(),
         search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
+        google_max_points=args.google_max_points,
     )
     site_rows = [o.row() for o in outcomes]
     _write_csv(site_rows, args.out, "site_id")
@@ -141,6 +142,7 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
     outcomes = size_sites(
         sites, OvertureFootprints(workers=args.workers), geometric, geocoder, client, calibrator,
         ReviewPolicy(), search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
+        google_max_points=args.google_max_points,
     )
     rows = compare(truth, outcomes, geometric.design.module.watts_dc)
     _write_csv(rows, args.out, "site")
@@ -202,6 +204,8 @@ def build_parser() -> argparse.ArgumentParser:
     design.add_argument("--google", action="store_true", help="cross-check with Google Solar API (billed per uncached call)")
     design.add_argument("--google-key-env", default="GOOGLE_SOLAR_API_KEY")
     design.add_argument("--google-cache", default=".cache/google_solar")
+    design.add_argument("--google-max-points", type=int, default=9,
+                        help="max Google lookups per building; large buildings are split by Google into pieces")
     design.add_argument("--workers", type=int, default=8)
     design.add_argument("--module-watts", type=float, default=550.0)
     design.add_argument("--module-length-m", type=float, default=2.278)

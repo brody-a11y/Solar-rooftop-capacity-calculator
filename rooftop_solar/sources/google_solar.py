@@ -16,7 +16,7 @@ from pathlib import Path
 
 import requests
 from shapely import affinity
-from shapely.geometry import box
+from shapely.geometry import Point, box
 
 from ..geometry import LocalFrame
 from ..models import Building, Racking, SizingResult
@@ -49,12 +49,18 @@ class GoogleInsights:
     max_array_panels: int
     segments: list[GoogleSegment]
     panels: list[GooglePanel]
+    name: str = ""
+    center: tuple[float, float] | None = None  # (lon, lat)
+    buildings_merged: int = 1
 
     @classmethod
     def from_response(cls, data: dict) -> "GoogleInsights":
         sp = data.get("solarPotential", {})
         d = data.get("imageryDate", {})
+        c = data.get("center") or {}
         return cls(
+            name=data.get("name", ""),
+            center=(c["longitude"], c["latitude"]) if "longitude" in c else None,
             imagery_quality=data.get("imageryQuality", "UNKNOWN"),
             imagery_date=f"{d.get('year', '')}-{d.get('month', '')}-{d.get('day', '')}" if d else "",
             panel_height_m=sp.get("panelHeightMeters", 0.0),
@@ -75,6 +81,85 @@ class GoogleInsights:
                 for p in sp.get("solarPanels", [])
             ],
         )
+
+
+_QUALITY_RANK = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
+
+
+def merge_insights(parts: list[GoogleInsights]) -> GoogleInsights:
+    """Combine several Google 'buildings' into one. Google often splits a large
+    podium building or a complex into separate entries."""
+    first = parts[0]
+    segments, panels = [], []
+    for part in parts:
+        offset = len(segments)
+        segments.extend(part.segments)
+        panels.extend(GooglePanel(p.lon, p.lat, p.orientation, p.segment_index + offset) for p in part.panels)
+    worst = min(parts, key=lambda x: _QUALITY_RANK.get(x.imagery_quality, 0))
+    return GoogleInsights(
+        imagery_quality=worst.imagery_quality,
+        imagery_date=min(p.imagery_date for p in parts),
+        panel_height_m=first.panel_height_m,
+        panel_width_m=first.panel_width_m,
+        panel_watts=first.panel_watts,
+        max_array_panels=sum(p.max_array_panels for p in parts),
+        segments=segments,
+        panels=panels,
+        name="+".join(p.name for p in parts),
+        center=first.center,
+        buildings_merged=len(parts),
+    )
+
+
+def sample_points(footprint, spacing_m: float = 35.0, max_points: int = 9) -> list[tuple[float, float]]:
+    """(lon, lat) query points spread over a footprint: its representative point,
+    then a grid of interior points, thinned evenly to at most `max_points`."""
+    frame = LocalFrame.for_geometry(footprint)
+    local = frame.to_local(footprint)
+    rp = local.representative_point()
+    pts = [(rp.x, rp.y)]
+    minx, miny, maxx, maxy = local.bounds
+    grid = []
+    y = miny + spacing_m / 2
+    while y < maxy:
+        x = minx + spacing_m / 2
+        while x < maxx:
+            if local.contains(Point(x, y)) and math.hypot(x - rp.x, y - rp.y) > spacing_m / 2:
+                grid.append((x, y))
+            x += spacing_m
+        y += spacing_m
+    room = max_points - 1
+    if len(grid) > room > 0:
+        step = len(grid) / room
+        grid = [grid[int(i * step)] for i in range(room)]
+    pts.extend(grid[: max(room, 0)])
+    return [frame.point_to_lonlat(x, y) for x, y in pts]
+
+
+def fetch_building(client: "GoogleSolarClient", footprint, max_points: int = 9,
+                   spacing_m: float = 35.0, match_buffer_m: float = 10.0) -> GoogleInsights:
+    """Query Google at several points over a footprint and merge the distinct
+    buildings whose centres fall on (or within `match_buffer_m` of) it."""
+    frame = LocalFrame.for_geometry(footprint)
+    zone = frame.to_local(footprint).buffer(match_buffer_m)
+    found: dict[str, GoogleInsights] = {}
+    errors = []
+    for lon, lat in sample_points(footprint, spacing_m, max_points):
+        try:
+            ins = GoogleInsights.from_response(client.building_insights(lat, lon))
+        except requests.HTTPError as exc:
+            errors.append(exc)
+            continue
+        if ins.name in found:
+            continue
+        if ins.center is not None and not zone.contains(Point(*frame.point_to_local(*ins.center))):
+            continue  # Google's closest building is a neighbour
+        found[ins.name] = ins
+    if not found:
+        if errors:
+            raise errors[0]
+        raise LookupError("Google found no building on this footprint")
+    return merge_insights(list(found.values()))
 
 
 class GoogleSolarClient:
@@ -181,6 +266,7 @@ class GoogleFilteredEstimator:
                 "google_unclipped_kw": unclipped_kw,
                 "google_panels_kept": len(kept),
                 "google_max_array_panels": insights.max_array_panels,
+                "google_buildings_merged": insights.buildings_merged,
                 "imagery_quality": insights.imagery_quality,
                 "imagery_date": insights.imagery_date,
                 "flat_density_factor": round(flat_density, 3),

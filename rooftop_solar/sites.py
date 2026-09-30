@@ -159,6 +159,7 @@ def size_sites(
     progress=print,
     far_m: float = 25.0,
     tie_m: float = 10.0,
+    google_max_points: int = 9,
 ) -> list[SiteOutcome]:
     outcomes = [SiteOutcome(s) for s in sites]
 
@@ -226,7 +227,7 @@ def size_sites(
     # 3. sizing
     jobs = [(o, b) for o in outcomes for b in o.buildings]
     progress(f"Sizing {len(jobs)} buildings...")
-    results = estimate_many([b for _o, b in jobs], geometric, google_client, calibrator, policy, workers)
+    results = estimate_many([b for _o, b in jobs], geometric, google_client, calibrator, policy, workers, google_max_points)
     for (o, _b), est in zip(jobs, results):
         o.estimates.append(est)
     return outcomes
