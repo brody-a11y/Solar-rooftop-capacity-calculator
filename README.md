@@ -53,6 +53,12 @@ which is conservative at eaves. Results carry the flag `pitched_setbacks_approxi
 
 ## Install and run
 
+**Mac without Git:** follow `START HERE.txt`. `Install.command` sets it up and
+`Size Buildings.command` runs it, both by double-click. The Python environment
+lives in `~/.rooftop-solar`, so the folder itself can sit in Google Drive.
+
+**Command line:**
+
 ```bash
 pip install -e ".[dev]"
 pytest

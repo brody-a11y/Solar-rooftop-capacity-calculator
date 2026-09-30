@@ -1,0 +1,33 @@
+ROOFTOP SOLAR CALCULATOR - MAC SETUP
+
+One-time setup
+1. You need Python 3.10 or newer. If you don't have it, install it from
+   https://www.python.org/downloads/ (download the macOS installer and run it).
+2. Double-click "Install.command". It takes a minute or two and ends with
+   "16 passed" and "Installed."
+
+   If macOS says the file can't be opened because it's from an unidentified
+   developer: click Done, open System Settings > Privacy & Security, scroll
+   down and click "Open Anyway" next to Install.command. Do the same the first
+   time you open "Size Buildings.command".
+
+Each time you size buildings
+1. Double-click "Size Buildings.command".
+2. Drag your buildings .geojson file into the window and press Return.
+3. A Finder window opens with two new files next to your input:
+     <name>_results.csv      one row per building (Excel or Numbers)
+     <name>_layouts.geojson  panel placements; drag onto https://geojson.io to view
+
+To try it now, drag in examples/sample_buildings.geojson. Its two buildings are
+made up for testing; they are not real sites.
+
+Optional
+- Calibration: put calibration.json in the same folder as your buildings file
+  and it is applied automatically.
+- Google Solar cross-check: save your API key as a plain text file at
+  ~/.rooftop-solar/google_api_key (Google bills per new building looked up).
+
+After an update: replace this folder with the new version and double-click
+Install.command again.
+
+Full documentation: README.md
