@@ -138,3 +138,67 @@ def test_cli_size_sites_with_coordinates(tmp_path, footprints, monkeypatch):
     assert rows[0]["site_id"] == "Warehouse" and float(rows[0]["dc_kw"]) > 0
     with (tmp_path / "res_buildings.csv").open() as f:
         assert list(csv.DictReader(f))[0]["overture_class"] == "warehouse"
+
+
+def test_group_column_sums_buildings_into_one_property(tmp_path, footprints, monkeypatch):
+    import rooftop_solar.cli as cli
+
+    monkeypatch.setattr(cli, "OvertureFootprints", lambda **kw: footprints)
+    (la, lo), (lb, lob) = ll(220, 7)[::-1], ll(220, 37)[::-1]
+    sites = tmp_path / "s.csv"
+    sites.write_text(f"Name,Group,Latitude,Longitude\nApt A,Oak Complex,{la},{lo}\nApt B,Oak Complex,{lb},{lob}\n")
+    out = tmp_path / "r.csv"
+    assert main(["size-sites", "--sites", str(sites), "--out", str(out), "--workers", "1"]) == 0
+    with (tmp_path / "r_properties.csv").open() as f:
+        props = list(csv.DictReader(f))
+    with out.open() as f:
+        per_site = {r["site_id"]: float(r["dc_kw"]) for r in csv.DictReader(f)}
+    assert [p["group"] for p in props] == ["Oak Complex"]
+    assert props[0]["buildings"] == "2"
+    assert float(props[0]["dc_kw"]) == pytest.approx(per_site["Apt A"] + per_site["Apt B"])
+
+
+class _UnitPoints:
+    """Stand-in for county address data: two unit points, one on each apartment building."""
+
+    def unit_points(self, address):
+        return [ll(220, 7)[::-1], ll(220, 37)[::-1]] if address.startswith("10 Oak") else []
+
+
+def test_unit_address_points_add_the_other_buildings(footprints):
+    from rooftop_solar.sites import Site
+
+    lon, lat = ll(220, 7)
+    sites = [Site("Oak", "10 Oak St, Town, CA 90001", lat, lon)]
+    out = size_sites(sites, footprints, GeometricEstimator(), workers=1, progress=lambda *_: None, unit_addresses=_UnitPoints())
+    assert [m.overture_id for m in out[0].matches] == ["apt-a", "apt-b"]
+    assert "campus_2_buildings_from_unit_address_points" in out[0].reasons
+
+
+def test_google_fallback_looks_around_a_pin_on_the_sidewalk(footprints):
+    from rooftop_solar.sites import Site
+    from rooftop_solar.sources.google_solar import GoogleSolarClient
+
+    # pin at (900, 900) with no mapped building; a large Google building sits just north of it
+    from .test_accuracy import _fake_insights
+
+    class Client(GoogleSolarClient):
+        def __init__(self):
+            pass
+
+        def building_insights(self, lat, lon, required_quality="MEDIUM"):
+            from .helpers import FRAME
+
+            x, y = FRAME.point_to_local(lon, lat)
+            if y < 910:  # the pin: an entry canopy with a few panels
+                r = _fake_insights(lat, lon)
+                r["solarPotential"]["solarPanels"] = r["solarPotential"]["solarPanels"][:4]
+                return r
+            clon, clat = FRAME.point_to_lonlat(900, 915)
+            return _fake_insights(clat, clon)
+
+    lon, lat = ll(900, 900)
+    out = size_sites([Site("New", lat=lat, lon=lon)], footprints, GeometricEstimator(), google_client=Client(),
+                     workers=1, progress=lambda *_: None)
+    assert "footprint_from_google_imagery_check_date" in out[0].reasons
+    assert out[0].dc_kw > 1.0

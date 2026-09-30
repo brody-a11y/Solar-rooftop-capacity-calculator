@@ -16,7 +16,7 @@ from .sizing import DesignConfig, GeometricEstimator
 from .sources.geojson_io import load_buildings as load_geojson_buildings
 from .sources.geojson_io import write_layouts as write_geojson_layouts
 from .sources.kml_io import load_kml_buildings, write_kml_layouts
-from .sites import read_sites, size_sites
+from .sites import group_rows, read_sites, size_sites
 from .sources.geocode import Geocoder
 from .sources.google_solar import GoogleSolarClient
 from .sources.overture import OvertureFootprints
@@ -94,6 +94,14 @@ def cmd_size(args: argparse.Namespace) -> int:
     return 0
 
 
+def _unit_addresses(args: argparse.Namespace, sites):
+    if args.no_unit_points or not any(s.address for s in sites):
+        return None
+    from .sources.overture_addresses import OvertureAddresses
+
+    return OvertureAddresses()
+
+
 def cmd_size_sites(args: argparse.Namespace) -> int:
     geometric, calibrator, client = _setup(args)
     try:
@@ -115,12 +123,15 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
     outcomes = size_sites(
         sites, footprints, geometric, geocoder, client, calibrator, ReviewPolicy(),
         search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
-        google_max_points=args.google_max_points,
+        google_max_points=args.google_max_points, unit_addresses=_unit_addresses(args, sites),
     )
     site_rows = [o.row() for o in outcomes]
     _write_csv(site_rows, args.out, "site_id")
     buildings_out = args.buildings_out or args.out.rsplit(".", 1)[0] + "_buildings.csv"
     _write_csv([r for o in outcomes for r in o.building_rows()], buildings_out, "site_id")
+    groups = group_rows(outcomes)
+    if groups:
+        _write_csv(groups, args.out.rsplit(".", 1)[0] + "_properties.csv", "group")
     if args.layouts:
         write_layouts([e.primary for o in outcomes for e in o.estimates if e.primary], args.layouts)
     found = sum(1 for o in outcomes if o.buildings)
@@ -142,7 +153,7 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
     outcomes = size_sites(
         sites, OvertureFootprints(workers=args.workers), geometric, geocoder, client, calibrator,
         ReviewPolicy(), search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
-        google_max_points=args.google_max_points,
+        google_max_points=args.google_max_points, unit_addresses=_unit_addresses(args, sites),
     )
     rows = compare(truth, outcomes, geometric.design.module.watts_dc)
     _write_csv(rows, args.out, "site")
@@ -207,6 +218,8 @@ def build_parser() -> argparse.ArgumentParser:
     design.add_argument("--google-max-points", type=int, default=9,
                         help="max Google lookups per building; large buildings are split by Google into pieces")
     design.add_argument("--workers", type=int, default=8)
+    design.add_argument("--no-unit-points", action="store_true",
+                        help="don't add buildings found under county per-unit address points")
     design.add_argument("--module-watts", type=float, default=550.0)
     design.add_argument("--module-length-m", type=float, default=2.278)
     design.add_argument("--module-width-m", type=float, default=1.134)

@@ -8,10 +8,12 @@ optional id/name and occupancy columns. Header names are matched loosely
 from __future__ import annotations
 
 import csv
+import math
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .calibration import Calibrator
+from .geometry import LocalFrame
 from .models import Building, Occupancy
 from .pipeline import ReviewPolicy, SiteEstimate, estimate_many
 from .sizing import GeometricEstimator
@@ -29,6 +31,7 @@ _HEADERS = {
     "lat": ("lat", "latitude", "y"),
     "lon": ("lon", "lng", "long", "longitude", "x"),
     "occupancy": ("occupancy", "building type", "type", "property type"),
+    "group": ("group", "property group", "parent property", "main address", "complex"),
 }
 
 
@@ -56,6 +59,7 @@ class Site:
     lat: float | None = None
     lon: float | None = None
     occupancy: Occupancy | None = None
+    group: str = ""  # rows sharing a group are one property (e.g. one row per building)
 
 
 def read_sites(path: str) -> list[Site]:
@@ -92,7 +96,7 @@ def read_sites(path: str) -> list[Site]:
             seen[sid] = seen.get(sid, 0) + 1
             if seen[sid] > 1:
                 sid = f"{sid} ({seen[sid]})"
-            sites.append(Site(sid, address, lat, lon, _occupancy_from_text(get("occupancy"))))
+            sites.append(Site(sid, address, lat, lon, _occupancy_from_text(get("occupancy")), get("group")))
     return sites
 
 
@@ -116,6 +120,7 @@ class SiteOutcome:
             reasons.extend(r for r in e.reasons if r not in reasons)
         return {
             "site_id": self.site.id,
+            "group": self.site.group,
             "address": self.site.address,
             "matched_address": g.matched_address if g else "",
             "lat": round(g.lat, 7) if g else "",
@@ -146,19 +151,62 @@ class SiteOutcome:
         return rows
 
 
-def _google_footprint(o: SiteOutcome, client: GoogleSolarClient, min_panels: int = 40) -> FootprintMatch | None:
+def group_rows(outcomes: list["SiteOutcome"]) -> list[dict]:
+    """One row per Group: summed sizes over its sites (e.g. one site per building)."""
+    groups: dict[str, list[SiteOutcome]] = {}
+    for o in outcomes:
+        if o.site.group:
+            groups.setdefault(o.site.group, []).append(o)
+    rows = []
+    for name, members in groups.items():
+        member_rows = [m.row() for m in members]
+        reasons: list[str] = []
+        for r in member_rows:
+            reasons.extend(x for x in r["reasons"].split(";") if x and x not in reasons)
+        rows.append({
+            "group": name,
+            "sites": len(members),
+            "buildings": sum(r["buildings"] for r in member_rows),
+            "dc_kw": round(sum(r["dc_kw"] for r in member_rows), 2),
+            "raw_kw": round(sum(r["raw_kw"] for r in member_rows), 2),
+            "module_count": sum(r["module_count"] for r in member_rows),
+            "needs_review": any(r["needs_review"] for r in member_rows),
+            "reasons": ";".join(reasons),
+        })
+    return rows
+
+
+def _google_footprint(o: SiteOutcome, client: GoogleSolarClient, min_panels: int = 40,
+                      ring_m: float = 25.0, reach_m: float = 25.0) -> FootprintMatch | None:
     """Google's building at the site's point, for buildings the footprint data
-    doesn't have yet (usually new construction)."""
-    try:
-        ins = GoogleInsights.from_response(client.building_insights(o.geocode.lat, o.geocode.lon))
-    except Exception:  # no Google building either; reported as no_building_within
+    doesn't have yet (usually new construction).
+
+    Address pins often sit on a sidewalk or entry canopy, so if the building at
+    the pin is small, four more points 25 m away (N, E, S, W) are tried, and the
+    largest building with panels within `reach_m` of the pin is used.
+    """
+    frame = LocalFrame(o.geocode.lon, o.geocode.lat)
+    best = None
+    offsets = [(0.0, 0.0), (0.0, ring_m), (ring_m, 0.0), (0.0, -ring_m), (-ring_m, 0.0)]
+    for i, (dx, dy) in enumerate(offsets):
+        lon, lat = frame.point_to_lonlat(dx, dy)
+        try:
+            ins = GoogleInsights.from_response(client.building_insights(lat, lon))
+        except Exception:
+            continue
+        if len(ins.panels) < min_panels:
+            continue
+        near = min(math.hypot(*frame.point_to_local(p.lon, p.lat)) for p in ins.panels)
+        if near <= reach_m and (best is None or len(ins.panels) > len(best.panels)):
+            best = ins
+        if i == 0 and best is not None:
+            break  # the pin itself is on a real building
+    if best is None:
         return None
-    if len(ins.panels) < min_panels:  # a shed or carport, not the property
-        return None
-    fp = footprint_from_insights(ins)
+    fp = footprint_from_insights(best)
     if fp is None:
         return None
-    return FootprintMatch(f"google:{ins.name}", fp, 0.0, None, None, None, None, None)
+    return FootprintMatch(f"google:{best.name}", fp, 0.0, None, None, None, None, None)
 
 
 def size_sites(
@@ -176,6 +224,7 @@ def size_sites(
     far_m: float = 25.0,
     tie_m: float = 10.0,
     google_max_points: int = 9,
+    unit_addresses=None,
 ) -> list[SiteOutcome]:
     outcomes = [SiteOutcome(s) for s in sites]
 
@@ -207,6 +256,30 @@ def size_sites(
     progress(f"Finding building footprints for {len(located)} sites (first run builds an index, ~1 min)...")
     found = footprints.find(located, search_m=search_m, campus_m=campus_m) if located else {}
 
+    # Multi-building properties: buildings under the county's per-unit address points.
+    if unit_addresses is not None and campus_m == 0:
+        unit_pts: dict[str, tuple[float, float]] = {}
+        for o in outcomes:
+            if not (o.geocode and o.site.address and found.get(o.site.id)):
+                continue
+            try:
+                pts = unit_addresses.unit_points(o.site.address)
+            except Exception:  # unit points are a bonus; never fail the site over them
+                pts = []
+            if len(pts) > 1:
+                for i, (lat, lon) in enumerate(pts):
+                    unit_pts[f"{o.site.id}\x00{i}"] = (lon, lat)
+        if unit_pts:
+            progress(f"Adding buildings under {len(unit_pts)} unit address points...")
+            extra = footprints.find(unit_pts, search_m=3.0)
+            for key, ms in extra.items():
+                sid = key.split("\x00")[0]
+                have = {m.overture_id for m in found[sid]}
+                for m in ms[:1]:
+                    if m.overture_id not in have and m.distance_m <= 3.0:
+                        found[sid].append(m)
+                        have.add(m.overture_id)
+
     owner: dict[str, str] = {}
     for o in outcomes:
         if not o.geocode:
@@ -232,7 +305,8 @@ def size_sites(
         elif m0.distance_m > 0 and m0.runner_up_m is not None and m0.runner_up_m - m0.distance_m < tie_m:
             o.reasons.append("two_buildings_equally_close_check_match")
         if len(o.matches) > 1:
-            o.reasons.append(f"campus_{len(o.matches)}_buildings")
+            source = "unit_address_points" if campus_m == 0 else f"{campus_m:.0f}m_radius"
+            o.reasons.append(f"campus_{len(o.matches)}_buildings_from_{source}")
         for n, m in enumerate(o.matches):
             occ = o.site.occupancy or occupancy_from_class(m.building_class)
             if occ is None:

@@ -189,3 +189,22 @@ class OvertureAddresses:
         f = (n - lower) / (upper - lower)
         (la0, lo0), (la1, lo1) = pts[lower], pts[upper]
         return la0 + f * (la1 - la0), lo0 + f * (lo1 - lo0), f"~{n} {name} {zipcode} (between {lower} and {upper})", "interpolated"
+
+    def unit_points(self, address: str) -> list[tuple[float, float]]:
+        """(lat, lon) of every address point sharing this house number and street
+        (apartment units, building letters). Several distinct points usually mean
+        a multi-building property."""
+        parsed = parse_address(address)
+        if not parsed:
+            return []
+        number, street, zipcode = parsed
+        table = self._zip_table(zipcode)
+        if table.num_rows == 0:
+            return []
+        rows = table.filter(pc.equal(pc.utf8_upper(table["number"]), number)).to_pylist()
+        query = street_tokens(street)
+        scored = [(_score(query, street_tokens(r["street"] or "")), r) for r in rows]
+        top = max((sc for sc, _ in scored), default=0.0)
+        if top == 0:
+            return []
+        return sorted({(round(r["lat"], 6), round(r["lon"], 6)) for sc, r in scored if sc == top})

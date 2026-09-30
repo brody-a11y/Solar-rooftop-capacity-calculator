@@ -19,6 +19,10 @@ Sizing a list of properties (no drawing needed)
      Address                 full address, OR separate Street/City/State/Zip
                              columns, OR Latitude and Longitude columns
      Property Type           optional: Multifamily or Commercial
+     Group                   optional: for a property with several buildings,
+                             use one row per building (its own address or
+                             Latitude/Longitude) and give them the same Group.
+                             Totals per Group go to <name>_results_properties.csv
 2. Double-click "Size Buildings.command", drag the .csv in, press Return.
    The first run takes about a minute extra to build a map index.
 3. Results appear next to your file:
