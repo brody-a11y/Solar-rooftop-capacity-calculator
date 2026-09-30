@@ -17,8 +17,9 @@ from pathlib import Path
 import requests
 from shapely import affinity
 from shapely.geometry import Point, box
+from shapely.ops import unary_union
 
-from ..geometry import LocalFrame
+from ..geometry import LocalFrame, polygons
 from ..models import Building, Racking, SizingResult
 from ..sizing import GeometricEstimator
 
@@ -62,7 +63,7 @@ class GoogleInsights:
             name=data.get("name", ""),
             center=(c["longitude"], c["latitude"]) if "longitude" in c else None,
             imagery_quality=data.get("imageryQuality", "UNKNOWN"),
-            imagery_date=f"{d.get('year', '')}-{d.get('month', '')}-{d.get('day', '')}" if d else "",
+            imagery_date=f"{d.get('year', 0):04d}-{d.get('month', 0):02d}-{d.get('day', 0):02d}" if d else "",
             panel_height_m=sp.get("panelHeightMeters", 0.0),
             panel_width_m=sp.get("panelWidthMeters", 0.0),
             panel_watts=sp.get("panelCapacityWatts", 0.0),
@@ -81,6 +82,44 @@ class GoogleInsights:
                 for p in sp.get("solarPanels", [])
             ],
         )
+
+
+def _segment(insights: GoogleInsights, p: GooglePanel) -> GoogleSegment:
+    return insights.segments[p.segment_index] if p.segment_index < len(insights.segments) else GoogleSegment(0, 180)
+
+
+def _panel_dims(insights: GoogleInsights, p: GooglePanel) -> tuple[float, float]:
+    """(across-slope, down-slope) panel size. LANDSCAPE: long edge perpendicular
+    to the segment azimuth; PORTRAIT: parallel."""
+    if p.orientation == "PORTRAIT":
+        return insights.panel_width_m, insights.panel_height_m
+    return insights.panel_height_m, insights.panel_width_m
+
+
+def _panel_rect(insights: GoogleInsights, p: GooglePanel, seg: GoogleSegment, frame: LocalFrame):
+    """Plan-view panel rectangle in `frame` coordinates."""
+    across, down = _panel_dims(insights, p)
+    cos_p = math.cos(math.radians(seg.pitch_deg))
+    x, y = frame.point_to_local(p.lon, p.lat)
+    rect = box(-across / 2, -down * cos_p / 2, across / 2, down * cos_p / 2)
+    return affinity.translate(affinity.rotate(rect, -seg.azimuth_deg, origin=(0, 0)), x, y)
+
+
+def footprint_from_insights(insights: GoogleInsights, pad_m: float = 1.6, close_m: float = 3.0):
+    """Approximate roof outline (lon/lat) from Google's panel layout, for sites the
+    footprint dataset doesn't have yet (new construction). Panels are merged,
+    gaps up to 2 x `close_m` are closed, and the outline is padded by `pad_m` so
+    the fire-code perimeter lands roughly on Google's own edge margin."""
+    if not insights.panels:
+        return None
+    lon0, lat0 = insights.center or (insights.panels[0].lon, insights.panels[0].lat)
+    frame = LocalFrame(lon0, lat0)
+    rects = unary_union([_panel_rect(insights, p, _segment(insights, p), frame) for p in insights.panels])
+    outline = rects.buffer(close_m, join_style="mitre").buffer(pad_m - close_m, join_style="mitre")
+    parts = polygons(outline)
+    if not parts:
+        return None
+    return frame.to_lonlat(max(parts, key=lambda g: g.area))
 
 
 _QUALITY_RANK = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
@@ -236,20 +275,13 @@ class GoogleFilteredEstimator:
         all_surface_m2 = all_flat_m2 = 0.0  # every Google panel, ignoring the code zone
         kinds = set()
         for p in insights.panels:
-            seg = insights.segments[p.segment_index] if p.segment_index < len(insights.segments) else GoogleSegment(0, 180)
-            cos_p = math.cos(math.radians(seg.pitch_deg))
-            # LANDSCAPE: long edge perpendicular to segment azimuth; PORTRAIT: parallel
-            if p.orientation == "PORTRAIT":
-                across, down = insights.panel_width_m, insights.panel_height_m
-            else:
-                across, down = insights.panel_height_m, insights.panel_width_m
+            seg = _segment(insights, p)
+            across, down = _panel_dims(insights, p)
             is_flat = seg.pitch_deg < flat_threshold
             all_surface_m2 += across * down
             if is_flat:
                 all_flat_m2 += across * down
-            x, y = frame.point_to_local(p.lon, p.lat)
-            rect = box(-across / 2, -down * cos_p / 2, across / 2, down * cos_p / 2)
-            rect = affinity.translate(affinity.rotate(rect, -seg.azimuth_deg, origin=(0, 0)), x, y)
+            rect = _panel_rect(insights, p, seg, frame)
             if rect.intersection(zone).area < self.min_inside_fraction * rect.area:
                 continue
             kept.append(rect)

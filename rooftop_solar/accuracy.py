@@ -81,6 +81,7 @@ def compare(truth: dict[str, dict], outcomes: list[SiteOutcome], module_w: float
                 row[f"{label}_within"] = abs(err) <= tolerance
             else:
                 row[f"{label}_kw"], row[f"{label}_err"], row[f"{label}_within"] = "", "", ""
+        row["google_imagery_date"] = ";".join(sorted({e.google.details.get("imagery_date", "") for e in est if e.google}))
         row["reasons"] = o.row()["reasons"] if o else "not run"
         rows.append(row)
     return rows

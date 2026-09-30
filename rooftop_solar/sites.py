@@ -16,7 +16,7 @@ from .models import Building, Occupancy
 from .pipeline import ReviewPolicy, SiteEstimate, estimate_many
 from .sizing import GeometricEstimator
 from .sources.geocode import Geocoder, GeocodeResult
-from .sources.google_solar import GoogleSolarClient
+from .sources.google_solar import GoogleInsights, GoogleSolarClient, footprint_from_insights
 from .sources.overture import FootprintMatch, OvertureFootprints, occupancy_from_class
 
 _HEADERS = {
@@ -140,9 +140,23 @@ class SiteOutcome:
                 occupancy=b.occupancy.value,
                 distance_from_address_m=round(m.distance_m, 1),
                 height_m=m.height_m if m.height_m is not None else "",
+                google_imagery_date=e.google.details.get("imagery_date", "") if e.google else "",
             )
             rows.append(r)
         return rows
+
+
+def _google_footprint(o: SiteOutcome, client: GoogleSolarClient) -> FootprintMatch | None:
+    """Google's building at the site's point, for buildings the footprint data
+    doesn't have yet (usually new construction)."""
+    try:
+        ins = GoogleInsights.from_response(client.building_insights(o.geocode.lat, o.geocode.lon))
+    except Exception:  # no Google building either; reported as no_building_within
+        return None
+    fp = footprint_from_insights(ins)
+    if fp is None:
+        return None
+    return FootprintMatch(f"google:{ins.name}", fp, 0.0, None, None, None, None, None)
 
 
 def size_sites(
@@ -202,8 +216,12 @@ def size_sites(
             else:
                 owner[m.overture_id] = o.site.id
         if not o.matches:
-            o.reasons.append(f"no_building_within_{search_m:.0f}m")
-            continue
+            fallback = _google_footprint(o, google_client) if google_client else None
+            if fallback is None:
+                o.reasons.append(f"no_building_within_{search_m:.0f}m")
+                continue
+            o.matches = [fallback]
+            o.reasons.append("footprint_from_google_imagery_check_date")
         m0 = o.matches[0]
         # Street-level points (Census) normally land a few metres off the building;
         # only flag matches that are far away or nearly tied with another building.

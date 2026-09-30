@@ -145,3 +145,31 @@ def test_fetch_building_retries_low_quality_after_404s():
 
     with pytest.raises(GoogleLookupError, match="http_403"):
         fetch_building(Always403(), fp)
+
+
+def test_footprint_from_insights_wraps_panel_grid():
+    from rooftop_solar.sources.google_solar import GoogleInsights, footprint_from_insights
+
+    lon, lat = ll(0, 0)
+    ins = GoogleInsights.from_response(_fake_insights(lat, lon))
+    fp = FRAME.to_local(footprint_from_insights(ins, pad_m=1.6))
+    # 10 x 6 grid of 1.879 x 1.045 m panels on a 2.0 x 1.1 m pitch -> ~19.9 x 6.5 m, padded 1.6 m each side
+    minx, miny, maxx, maxy = fp.bounds
+    assert maxx - minx == pytest.approx(19.879 + 3.2, abs=0.2)
+    assert maxy - miny == pytest.approx(6.545 + 3.2, abs=0.2)
+
+
+def test_site_without_mapped_building_falls_back_to_google(tmp_path, footprints, monkeypatch):
+    monkeypatch.setattr(cli, "OvertureFootprints", lambda **kw: footprints)
+    monkeypatch.setattr(GoogleSolarClient, "building_insights", lambda self, lat, lon, required_quality="MEDIUM": _fake_insights(lat, lon))
+    monkeypatch.setenv("GOOGLE_SOLAR_API_KEY", "test")
+    lon, lat = ll(900, 900)  # nothing in the footprint data here
+    truth = tmp_path / "truth.csv"
+    truth.write_text(f"name,address,latitude,longitude,true_kw,module_w\nNew build,,{lat},{lon},20,550\n")
+    out = tmp_path / "acc.csv"
+    assert cli.main(["accuracy", "--truth", str(truth), "--out", str(out), "--google", "--google-cache", str(tmp_path / "gc"), "--workers", "1"]) == 0
+    with out.open() as f:
+        row = list(csv.DictReader(f))[0]
+    assert "footprint_from_google_imagery_check_date" in row["reasons"]
+    assert float(row["google_kw"]) > 0
+    assert row["google_imagery_date"] == "2025-01-01"
