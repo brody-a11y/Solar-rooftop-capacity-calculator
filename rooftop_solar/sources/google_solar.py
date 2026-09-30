@@ -177,6 +177,7 @@ class GoogleFilteredEstimator:
                 "flat_density_factor": round(flat_density, 3),
             },
             layout=[frame.to_lonlat(r) for r in kept],
+            footprint=building.footprint,
         )
 
     def _flat_density(self, lat: float) -> float:

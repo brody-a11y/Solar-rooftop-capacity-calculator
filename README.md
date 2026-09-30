@@ -83,6 +83,28 @@ Set racking to what you actually spec: `--flat-racking east_west|south_tilt|flus
 The defaults (east-west at 10°, GCR 0.90, 550 W 2.278 × 1.134 m module) are
 placeholders. They are not taken from a particular racking datasheet.
 
+### Input: a list of addresses (portfolio mode)
+
+```bash
+rooftop-solar size-sites --sites properties.csv --out results.csv --layouts layouts.kml
+```
+
+The CSV needs an address column (or street/city/state/zip, or latitude/longitude).
+Each site is geocoded (`--geocoder census`, free and US-only, with street-level
+points; or `--geocoder google`, billed, which usually returns rooftop points). It
+is then matched to the nearest Overture Maps building footprint within
+`--search-m` (default 40 m). A one-time index of Overture's row groups (~20 MB,
+cached in `~/.rooftop-solar/overture`) makes each lookup read only the data near
+the site.
+
+For a property with several buildings, `--campus-radius-m` also sizes every
+building whose centre is within that radius; the default is 0, one building.
+Output is one row per site plus `<out>_buildings.csv` with one row per building.
+Occupancy comes from the CSV if given, otherwise from Overture's building class,
+otherwise multifamily (flagged). Matches are flagged for review when the point
+is more than 25 m from the building or two buildings are within 10 m of equally
+close.
+
 ### Input from Google Earth (KML/KMZ)
 
 Draw roofs as polygons in Google Earth Pro or Google Earth web and save as KML/KMZ.
@@ -120,9 +142,11 @@ factor. Below that, the global factor is used.
 
 ## Not built yet
 
-- **Footprint acquisition at scale.** You supply the footprints. Candidate sources
-  are Overture Maps / Microsoft building footprints, OSM, or parcel data. They were
-  not wired in because they couldn't be tested from this environment.
+- **Parcel boundaries.** A multi-building property is found only by radius
+  (`--campus-radius-m`). Parcel data would define it exactly, but it is licensed
+  (e.g. Regrid).
+- **Pitched roofs without Google.** Overture rarely records roof shape, so without
+  `--google`, pitched roofs are sized as flat and flagged for review.
 - **Obstruction detection from imagery.** This is the biggest remaining accuracy
   lever for footprint-only sites.
 - **Detailed R-3 ridge/eave/rake setbacks per plane.** This needs ridge-line

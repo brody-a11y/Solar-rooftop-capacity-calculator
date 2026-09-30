@@ -7,17 +7,19 @@ import csv
 import json
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
 
 from .calibration import Calibrator, Sample, accuracy, cross_validate
 from .fire_code import FireCodeRules
 from .models import Module, Racking
-from .pipeline import ReviewPolicy, estimate_site
+from .pipeline import ReviewPolicy, estimate_many
 from .sizing import DesignConfig, GeometricEstimator
 from .sources.geojson_io import load_buildings as load_geojson_buildings
 from .sources.geojson_io import write_layouts as write_geojson_layouts
 from .sources.kml_io import load_kml_buildings, write_kml_layouts
-from .sources.google_solar import GoogleFilteredEstimator, GoogleInsights, GoogleSolarClient
+from .sites import read_sites, size_sites
+from .sources.geocode import Geocoder
+from .sources.google_solar import GoogleSolarClient
+from .sources.overture import OvertureFootprints
 
 
 def _read_csv(path: str) -> list[dict]:
@@ -38,7 +40,8 @@ def write_layouts(results, path: str) -> None:
         write_geojson_layouts(results, path)
 
 
-def cmd_size(args: argparse.Namespace) -> int:
+def _setup(args: argparse.Namespace):
+    """Estimator, calibrator and optional Google client from the shared design flags."""
     rules = FireCodeRules(
         section_gap_ft=args.section_gap_ft,
         residential_alternative_for_pitched_r2=not args.no_residential_alternative,
@@ -53,16 +56,25 @@ def cmd_size(args: argparse.Namespace) -> int:
     )
     geometric = GeometricEstimator(rules, design)
     calibrator = Calibrator.load(args.calibration) if args.calibration else None
-    policy = ReviewPolicy()
-
-    client = google = None
+    client = None
     if args.google:
         key = os.environ.get(args.google_key_env)
         if not key:
-            print(f"--google set but ${args.google_key_env} is empty", file=sys.stderr)
-            return 2
+            raise SystemExit(f"--google set but ${args.google_key_env} is empty")
         client = GoogleSolarClient(key, cache_dir=args.google_cache)
-        google = GoogleFilteredEstimator(geometric)
+    return geometric, calibrator, client
+
+
+def _write_csv(rows: list[dict], path: str, empty_header: str) -> None:
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else [empty_header])
+        w.writeheader()
+        w.writerows(rows)
+
+
+def cmd_size(args: argparse.Namespace) -> int:
+    geometric, calibrator, client = _setup(args)
+    policy = ReviewPolicy()
 
     try:
         buildings = load_buildings(args.buildings)
@@ -70,31 +82,49 @@ def cmd_size(args: argparse.Namespace) -> int:
         print(f"Couldn't read {args.buildings}: {exc}", file=sys.stderr)
         return 2
 
-    def run(b):
-        insights = None
-        if client:
-            pt = b.footprint.representative_point()
-            try:
-                insights = GoogleInsights.from_response(client.building_insights(pt.y, pt.x))
-            except Exception as exc:  # recorded per site; one bad lookup must not stop a batch
-                est = estimate_site(b, geometric, None, None, calibrator, policy)
-                est.reasons.insert(0, f"google_error:{type(exc).__name__}")
-                est.needs_review = True
-                return b, est
-        return b, estimate_site(b, geometric, google, insights, calibrator, policy)
-
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        results = list(pool.map(run, buildings))
+    estimates = estimate_many(buildings, geometric, client, calibrator, policy, args.workers)
+    results = list(zip(buildings, estimates))
 
     rows = [est.row(b.occupancy.value) for b, est in results]
-    with open(args.out, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else ["building_id"])
-        w.writeheader()
-        w.writerows(rows)
+    _write_csv(rows, args.out, "building_id")
     if args.layouts:
         write_layouts([est.primary for _, est in results if est.primary], args.layouts)
     n_review = sum(r["needs_review"] for r in rows)
     print(f"sized {len(rows)} buildings -> {args.out}; {n_review} flagged for review")
+    return 0
+
+
+def cmd_size_sites(args: argparse.Namespace) -> int:
+    geometric, calibrator, client = _setup(args)
+    try:
+        sites = read_sites(args.sites)
+    except (ValueError, OSError) as exc:
+        print(f"Couldn't read {args.sites}: {exc}", file=sys.stderr)
+        return 2
+    geocoder = None
+    if any(s.lat is None for s in sites):
+        if args.geocoder == "google":
+            key = os.environ.get(args.google_key_env)
+            if not key:
+                print(f"--geocoder google needs ${args.google_key_env}", file=sys.stderr)
+                return 2
+            geocoder = Geocoder("google", key)
+        else:
+            geocoder = Geocoder("census")
+    footprints = OvertureFootprints(workers=args.workers)
+    outcomes = size_sites(
+        sites, footprints, geometric, geocoder, client, calibrator, ReviewPolicy(),
+        search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
+    )
+    site_rows = [o.row() for o in outcomes]
+    _write_csv(site_rows, args.out, "site_id")
+    buildings_out = args.buildings_out or args.out.rsplit(".", 1)[0] + "_buildings.csv"
+    _write_csv([r for o in outcomes for r in o.building_rows()], buildings_out, "site_id")
+    if args.layouts:
+        write_layouts([e.primary for o in outcomes for e in o.estimates if e.primary], args.layouts)
+    found = sum(1 for o in outcomes if o.buildings)
+    review = sum(r["needs_review"] for r in site_rows)
+    print(f"{len(sites)} sites: {found} matched to buildings, {review} flagged for review -> {args.out}")
     return 0
 
 
@@ -138,26 +168,40 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="rooftop-solar", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
 
-    s = sub.add_parser("size", help="size every building in a KML/KMZ or GeoJSON file")
+    design = argparse.ArgumentParser(add_help=False)
+    design.add_argument("--calibration", help="calibration JSON from `calibrate`")
+    design.add_argument("--google", action="store_true", help="cross-check with Google Solar API (billed per uncached call)")
+    design.add_argument("--google-key-env", default="GOOGLE_SOLAR_API_KEY")
+    design.add_argument("--google-cache", default=".cache/google_solar")
+    design.add_argument("--workers", type=int, default=8)
+    design.add_argument("--module-watts", type=float, default=550.0)
+    design.add_argument("--module-length-m", type=float, default=2.278)
+    design.add_argument("--module-width-m", type=float, default=1.134)
+    design.add_argument("--flat-racking", choices=[r.value for r in Racking], default=Racking.EAST_WEST.value)
+    design.add_argument("--flat-tilt-deg", type=float, default=10.0)
+    design.add_argument("--gcr", type=float, default=0.90, help="ground coverage ratio for flat-roof racking")
+    design.add_argument("--south-gcr-fixed", action="store_true", help="use --gcr for south racking instead of shading-derived spacing")
+    design.add_argument("--section-gap-ft", type=float, default=4.0, help="IFC 1205.3.3 array separation (4 or 8 ft)")
+    design.add_argument("--edge-setback-ft", type=float, default=0.0, help="wind/structural edge setback if larger than fire code")
+    design.add_argument("--no-residential-alternative", action="store_true", help="apply commercial rules to pitched R-2 roofs")
+
+    s = sub.add_parser("size", parents=[design], help="size every building in a KML/KMZ or GeoJSON file")
     s.add_argument("--buildings", required=True, help="Google Earth KML/KMZ or GeoJSON of roofs, planes and obstructions")
     s.add_argument("--out", required=True, help="output CSV")
     s.add_argument("--layouts", help="optional placed-module output for QA (.kml for Google Earth, else GeoJSON)")
-    s.add_argument("--calibration", help="calibration JSON from `calibrate`")
-    s.add_argument("--google", action="store_true", help="cross-check with Google Solar API (billed per uncached call)")
-    s.add_argument("--google-key-env", default="GOOGLE_SOLAR_API_KEY")
-    s.add_argument("--google-cache", default=".cache/google_solar")
-    s.add_argument("--workers", type=int, default=8)
-    s.add_argument("--module-watts", type=float, default=550.0)
-    s.add_argument("--module-length-m", type=float, default=2.278)
-    s.add_argument("--module-width-m", type=float, default=1.134)
-    s.add_argument("--flat-racking", choices=[r.value for r in Racking], default=Racking.EAST_WEST.value)
-    s.add_argument("--flat-tilt-deg", type=float, default=10.0)
-    s.add_argument("--gcr", type=float, default=0.90, help="ground coverage ratio for flat-roof racking")
-    s.add_argument("--south-gcr-fixed", action="store_true", help="use --gcr for south racking instead of shading-derived spacing")
-    s.add_argument("--section-gap-ft", type=float, default=4.0, help="IFC 1205.3.3 array separation (4 or 8 ft)")
-    s.add_argument("--edge-setback-ft", type=float, default=0.0, help="wind/structural edge setback if larger than fire code")
-    s.add_argument("--no-residential-alternative", action="store_true", help="apply commercial rules to pitched R-2 roofs")
     s.set_defaults(func=cmd_size)
+
+    ss = sub.add_parser("size-sites", parents=[design], help="size a CSV of addresses or coordinates")
+    ss.add_argument("--sites", required=True, help="CSV with an address column, or latitude/longitude")
+    ss.add_argument("--out", required=True, help="per-site output CSV")
+    ss.add_argument("--buildings-out", help="per-building output CSV (default: <out>_buildings.csv)")
+    ss.add_argument("--layouts", help="optional placed-module output for QA (.kml for Google Earth)")
+    ss.add_argument("--geocoder", choices=["census", "google"], default="census",
+                    help="census: free, US only, street-level points; google: billed, usually rooftop points")
+    ss.add_argument("--search-m", type=float, default=40.0, help="max distance from the address point to a building")
+    ss.add_argument("--campus-radius-m", type=float, default=0.0,
+                    help="also size every building within this radius (multi-building properties); 0 = one building")
+    ss.set_defaults(func=cmd_size_sites)
 
     c = sub.add_parser("calibrate", help="fit correction factors against real designs")
     c.add_argument("--results", required=True, help="CSV from `size`")

@@ -11,30 +11,36 @@ One-time setup
    down and click "Open Anyway" next to Install.command. Do the same the first
    time you open "Size Buildings.command".
 
-Drawing buildings in Google Earth
-1. Draw each roof outline as a polygon (Google Earth Pro: Add > Polygon;
-   Google Earth web: a project's "Draw line or shape"). Its name becomes the
-   building name in the results.
-   - Default is multifamily. Put "commercial" in the name or description for a
-     commercial building, or "R-3" for townhomes.
-2. Optional, for better accuracy: inside each roof, draw rooftop equipment as
-   polygons named HVAC, Vent, Skylight, Hatch, Standpipe or Smoke vent
-   (e.g. "HVAC 3"). If you draw any on a roof, draw all of them.
-3. Optional, for pitched roofs: draw each roof plane as a polygon named
-   "plane <pitch> <downslope direction>", e.g. "plane 6/12 S" or "plane 25 180".
-   Without planes, the roof is treated as flat.
-4. Save: Google Earth Pro: right-click the folder > Save Place As (.kmz).
-   Google Earth web: project menu > Export as KML file.
+Sizing a list of properties (no drawing needed)
+1. Make a spreadsheet with one row per property and save it as .csv
+   (Excel: File > Save As > CSV; Numbers: File > Export To > CSV).
+   Columns (header names are matched loosely):
+     Name                    optional; used to label results
+     Address                 full address, OR separate Street/City/State/Zip
+                             columns, OR Latitude and Longitude columns
+     Property Type           optional: Multifamily or Commercial
+2. Double-click "Size Buildings.command", drag the .csv in, press Return.
+   The first run takes about a minute extra to build a map index.
+3. Results appear next to your file:
+     <name>_results.csv            one row per property
+     <name>_results_buildings.csv  one row per building found
+     <name>_layouts.kml            roof outlines (yellow) and panels; open in
+                                   Google Earth to check the right roof was used
+   Check the "reasons" column: it says why a row needs review, e.g. the
+   address matched a building 30 m away, or two buildings were equally close.
 
-Each time you size buildings
-1. Double-click "Size Buildings.command".
-2. Drag your .kml or .kmz file into the window and press Return.
-3. A Finder window opens with two new files next to your input:
-     <name>_results.csv  one row per building (Excel or Numbers)
-     <name>_layouts.kml  panel placements; double-click to view in Google Earth
+To try it now, drag in examples/sample_sites.csv (six real Los Angeles
+buildings picked from the map data; not your properties).
 
-To try it now, drag in examples/sample_buildings.kml. Its two buildings are
-made up for testing; they are not real sites.
+How roofs are found: addresses are located with the free US Census geocoder,
+then matched to building outlines from Overture Maps (free, open data that
+combines OpenStreetMap, Microsoft and Google building footprints).
+
+Drawing roofs yourself in Google Earth (optional, for single sites)
+- Draw each roof outline as a polygon and save as .kml/.kmz, then drag that
+  file in instead of a .csv. Polygons inside a roof named HVAC, Vent,
+  Skylight, Hatch, Standpipe or Smoke vent are treated as obstructions;
+  "plane 6/12 S" marks a pitched roof face. See README.md for details.
 
 Optional
 - Calibration: put calibration.json in the same folder as your buildings file

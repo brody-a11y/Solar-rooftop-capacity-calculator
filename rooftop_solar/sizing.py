@@ -110,6 +110,7 @@ class GeometricEstimator:
             flags=flags,
             details={"perimeter_m": round(perimeter, 3), "planes": plane_details},
             layout=[frame.to_lonlat(m) for m in modules],
+            footprint=building.footprint,
         )
 
     def usable_zone(self, building: Building, frame: LocalFrame) -> BaseGeometry:

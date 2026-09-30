@@ -78,3 +78,4 @@ class SizingResult:
     flags: list[str] = field(default_factory=list)
     details: dict = field(default_factory=dict)
     layout: list[Polygon] = field(default_factory=list)  # placed modules, lon/lat
+    footprint: Polygon | None = None  # lon/lat, for QA output

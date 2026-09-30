@@ -7,12 +7,14 @@ two independent methods is what makes that routing possible.
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .calibration import Calibrator, segment_key
 from .models import Building, SizingResult
 from .sizing import GeometricEstimator
-from .sources.google_solar import GoogleFilteredEstimator, GoogleInsights
+from .sources.google_solar import GoogleFilteredEstimator, GoogleInsights, GoogleSolarClient
 
 
 @dataclass(frozen=True)
@@ -110,3 +112,42 @@ def estimate_site(
         geometric=geo,
         google=goo,
     )
+
+
+def _size_one(job) -> SiteEstimate:
+    building, geometric, insights, error, calibrator, policy = job
+    google = GoogleFilteredEstimator(geometric) if insights else None
+    est = estimate_site(building, geometric, google, insights, calibrator, policy)
+    if error:
+        est.reasons.insert(0, f"google_error:{error}")
+        est.needs_review = True
+    return est
+
+
+def estimate_many(
+    buildings: list[Building],
+    geometric: GeometricEstimator,
+    google_client: GoogleSolarClient | None = None,
+    calibrator: Calibrator | None = None,
+    policy: ReviewPolicy = ReviewPolicy(),
+    workers: int = 8,
+) -> list[SiteEstimate]:
+    """Google lookups on threads (network-bound), sizing on processes (CPU-bound;
+    threads contend on the GIL and run slower than one worker)."""
+    insights: list[GoogleInsights | None] = [None] * len(buildings)
+    errors: list[str | None] = [None] * len(buildings)
+    if google_client:
+        def fetch(i):
+            pt = buildings[i].footprint.representative_point()
+            try:
+                insights[i] = GoogleInsights.from_response(google_client.building_insights(pt.y, pt.x))
+            except Exception as exc:  # recorded per building; one bad lookup must not stop a batch
+                errors[i] = type(exc).__name__
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(fetch, range(len(buildings))))
+    jobs = [(b, geometric, insights[i], errors[i], calibrator, policy) for i, b in enumerate(buildings)]
+    procs = min(workers, os.cpu_count() or 1, len(jobs))
+    if procs <= 1:
+        return [_size_one(j) for j in jobs]
+    with ProcessPoolExecutor(max_workers=procs) as pool:
+        return list(pool.map(_size_one, jobs, chunksize=max(1, len(jobs) // (procs * 4))))

@@ -187,9 +187,18 @@ def write_kml_layouts(results: list[SizingResult], path: str | Path) -> None:
         '<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Solar layouts</name>',
         '<Style id="module"><LineStyle><color>ff000000</color><width>0.5</width></LineStyle>'
         "<PolyStyle><color>cc8b3d1f</color></PolyStyle></Style>",
+        '<Style id="roof"><LineStyle><color>ff00ffff</color><width>2</width></LineStyle>'
+        "<PolyStyle><fill>0</fill></PolyStyle></Style>",
     ]
     for r in results:
         parts.append(f"<Folder><name>{escape(r.building_id)} - {r.dc_kw:.1f} kW DC ({r.module_count} modules)</name>")
+        if r.footprint is not None:
+            parts.append(
+                f"<Placemark><name>{escape(r.building_id)} roof</name><styleUrl>#roof</styleUrl>"
+                "<Polygon><outerBoundaryIs><LinearRing>"
+                f"<coordinates>{_ring(r.footprint.exterior.coords)}</coordinates>"
+                "</LinearRing></outerBoundaryIs></Polygon></Placemark>"
+            )
         for poly in r.layout:
             parts.append(
                 "<Placemark><styleUrl>#module</styleUrl><Polygon><outerBoundaryIs><LinearRing>"
