@@ -63,6 +63,19 @@ class FootprintMatch:
     runner_up_m: float | None = None  # distance to the next-closest building
 
 
+def default_filesystem() -> pafs.FileSystem:
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    return pafs.S3FileSystem(anonymous=True, region="us-west-2", proxy_options=proxy or None)
+
+
+def latest_release(fs: pafs.FileSystem) -> str:
+    infos = fs.get_file_info(pafs.FileSelector(f"{BUCKET}/release"))
+    releases = sorted(Path(i.path).name for i in infos if i.type == pafs.FileType.Directory)
+    if not releases:
+        raise RuntimeError("no Overture releases found")
+    return releases[-1]
+
+
 def _largest(geom) -> Polygon | None:
     if isinstance(geom, MultiPolygon):
         return max(geom.geoms, key=lambda g: g.area)
@@ -79,12 +92,9 @@ class OvertureFootprints:
         workers: int = 8,
     ):
         self.cache_dir = Path(cache_dir)
-        if filesystem is None:
-            proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-            filesystem = pafs.S3FileSystem(anonymous=True, region="us-west-2", proxy_options=proxy or None)
-        self.fs = filesystem
+        self.fs = filesystem or default_filesystem()
         if base_path is None:
-            self.release = release or self.latest_release()
+            self.release = release or latest_release(self.fs)
             base_path = f"{BUCKET}/release/{self.release}/theme=buildings/type=building"
         else:
             self.release = release or "local"
@@ -94,13 +104,6 @@ class OvertureFootprints:
         self._lock = threading.Lock()
 
     # -- index ----------------------------------------------------------------
-
-    def latest_release(self) -> str:
-        infos = self.fs.get_file_info(pafs.FileSelector(f"{BUCKET}/release"))
-        releases = sorted(Path(i.path).name for i in infos if i.type == pafs.FileType.Directory)
-        if not releases:
-            raise RuntimeError("no Overture releases found")
-        return releases[-1]
 
     def _index_path(self) -> Path:
         return self.cache_dir / f"index-{self.release}.json"

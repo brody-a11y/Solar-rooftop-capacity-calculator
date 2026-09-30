@@ -1,5 +1,8 @@
 """Address -> coordinates.
 
+auto:   Overture address points, then the Census geocoder if no match (default).
+overture: Overture Maps address points (county/state address data). Free, US,
+        needs a house number and ZIP; points usually sit on the parcel.
 census: US Census Bureau geocoder. Free, no key, US only. Points are
         interpolated along the street, so they usually sit in the street in
         front of the building rather than on it.
@@ -31,9 +34,10 @@ class GeocodeResult:
 
 
 class Geocoder:
-    def __init__(self, provider: str = "census", api_key: str | None = None,
-                 cache_path: str | Path = Path.home() / ".rooftop-solar" / "geocode_cache.json", timeout: float = 30.0):
-        if provider not in ("census", "google"):
+    def __init__(self, provider: str = "auto", api_key: str | None = None,
+                 cache_path: str | Path = Path.home() / ".rooftop-solar" / "geocode_cache.json", timeout: float = 30.0,
+                 addresses=None):
+        if provider not in ("auto", "overture", "census", "google"):
             raise ValueError(f"unknown geocoder {provider!r}")
         if provider == "google" and not api_key:
             raise ValueError("google geocoding needs an API key")
@@ -42,6 +46,15 @@ class Geocoder:
         self._cache = json.loads(self.cache_path.read_text()) if self.cache_path.exists() else {}
         self._lock = threading.Lock()
         self.session = requests.Session()
+        self._addresses = addresses
+
+    @property
+    def addresses(self):
+        if self._addresses is None:
+            from .overture_addresses import OvertureAddresses
+
+            self._addresses = OvertureAddresses()
+        return self._addresses
 
     def geocode(self, address: str) -> GeocodeResult | None:
         key = f"{self.provider}|{' '.join(address.lower().split())}"
@@ -49,7 +62,14 @@ class Geocoder:
             if key in self._cache:
                 hit = self._cache[key]
                 return GeocodeResult(**hit) if hit else None
-        result = self._census(address) if self.provider == "census" else self._google(address)
+        if self.provider == "google":
+            result = self._google(address)
+        elif self.provider == "census":
+            result = self._census(address)
+        else:
+            result = self._overture(address)
+            if result is None and self.provider == "auto":
+                result = self._census(address)
         with self._lock:
             self._cache[key] = asdict(result) if result else None
         return result
@@ -58,6 +78,13 @@ class Geocoder:
         with self._lock:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             self.cache_path.write_text(json.dumps(self._cache))
+
+    def _overture(self, address: str) -> GeocodeResult | None:
+        hit = self.addresses.lookup(address)
+        if hit is None:
+            return None
+        lat, lon, matched, precision = hit
+        return GeocodeResult(lat, lon, "overture", precision, matched)
 
     def _census(self, address: str) -> GeocodeResult | None:
         r = self.session.get(

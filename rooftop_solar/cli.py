@@ -110,7 +110,7 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
                 return 2
             geocoder = Geocoder("google", key)
         else:
-            geocoder = Geocoder("census")
+            geocoder = Geocoder(args.geocoder)
     footprints = OvertureFootprints(workers=args.workers)
     outcomes = size_sites(
         sites, footprints, geometric, geocoder, client, calibrator, ReviewPolicy(),
@@ -196,8 +196,8 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument("--out", required=True, help="per-site output CSV")
     ss.add_argument("--buildings-out", help="per-building output CSV (default: <out>_buildings.csv)")
     ss.add_argument("--layouts", help="optional placed-module output for QA (.kml for Google Earth)")
-    ss.add_argument("--geocoder", choices=["census", "google"], default="census",
-                    help="census: free, US only, street-level points; google: billed, usually rooftop points")
+    ss.add_argument("--geocoder", choices=["auto", "overture", "census", "google"], default="auto",
+                    help="auto: Overture address points, then Census (free, US); google: billed")
     ss.add_argument("--search-m", type=float, default=40.0, help="max distance from the address point to a building")
     ss.add_argument("--campus-radius-m", type=float, default=0.0,
                     help="also size every building within this radius (multi-building properties); 0 = one building")
