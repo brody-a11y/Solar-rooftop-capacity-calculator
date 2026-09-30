@@ -40,15 +40,33 @@ class LocalFrame:
 
 def principal_axes(poly: BaseGeometry) -> tuple[float, float, float]:
     """(short side, long side, angle of long side in degrees CCW from +x) of the
-    minimum rotated rectangle."""
-    rect = poly.minimum_rotated_rectangle
-    coords = list(rect.exterior.coords)
-    edges = []
-    for (x1, y1), (x2, y2) in zip(coords[:2], coords[1:3]):
-        edges.append((math.hypot(x2 - x1, y2 - y1), math.degrees(math.atan2(y2 - y1, x2 - x1))))
-    edges.sort()
-    (short, _), (long_, angle) = edges
-    return short, long_, angle % 180.0
+    minimum-area bounding rectangle.
+
+    Computed directly over convex hull edges (the minimum-area rectangle has a side
+    on one of them) rather than with shapely's oriented_envelope, whose GEOS build
+    on macOS arm64 raises floating-point warnings.
+    """
+    hull = poly.convex_hull
+    if not isinstance(hull, Polygon):
+        minx, miny, maxx, maxy = poly.bounds
+        w, h = maxx - minx, maxy - miny
+        return (h, w, 0.0) if w >= h else (w, h, 90.0)
+    pts = list(hull.exterior.coords)
+    best = None
+    for (x1, y1), (x2, y2) in zip(pts[:-1], pts[1:]):
+        length = math.hypot(x2 - x1, y2 - y1)
+        if length < 1e-9:
+            continue
+        ux, uy = (x2 - x1) / length, (y2 - y1) / length
+        along = [x * ux + y * uy for x, y in pts]
+        across = [-x * uy + y * ux for x, y in pts]
+        w, h = max(along) - min(along), max(across) - min(across)
+        if best is None or w * h < best[0] - 1e-9:
+            best = (w * h, w, h, math.degrees(math.atan2(uy, ux)))
+    _area, w, h, angle = best
+    if w >= h:
+        return h, w, angle % 180.0
+    return w, h, (angle + 90.0) % 180.0
 
 
 def polygons(geom: BaseGeometry) -> list[Polygon]:

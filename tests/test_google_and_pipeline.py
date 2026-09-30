@@ -114,7 +114,8 @@ def test_cli_size_calibrate_evaluate(tmp_path):
     bpath.write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
     out = tmp_path / "r.csv"
     assert main(["size", "--buildings", str(bpath), "--out", str(out), "--layouts", str(tmp_path / "l.geojson")]) == 0
-    rows = list(csv.DictReader(open(out)))
+    with out.open() as f:
+        rows = list(csv.DictReader(f))
     assert len(rows) == 6 and float(rows[0]["dc_kw"]) > 0
 
     truth = tmp_path / "t.csv"
@@ -125,6 +126,7 @@ def test_cli_size_calibrate_evaluate(tmp_path):
     cal = tmp_path / "cal.json"
     assert main(["calibrate", "--results", str(out), "--truth", str(truth), "--out", str(cal)]) == 0
     assert main(["size", "--buildings", str(bpath), "--out", str(out), "--calibration", str(cal)]) == 0
-    rows = list(csv.DictReader(open(out)))
+    with out.open() as f:
+        rows = list(csv.DictReader(f))
     assert rows[0]["calibration_source"] == "segment"
     assert main(["evaluate", "--results", str(out), "--truth", str(truth)]) == 0
