@@ -4,21 +4,36 @@ One-time setup
 1. You need Python 3.10 or newer. If you don't have it, install it from
    https://www.python.org/downloads/ (download the macOS installer and run it).
 2. Double-click "Install.command". It takes a minute or two and ends with
-   "16 passed" and "Installed."
+   "passed" and "Installed."
 
    If macOS says the file can't be opened because it's from an unidentified
    developer: click Done, open System Settings > Privacy & Security, scroll
    down and click "Open Anyway" next to Install.command. Do the same the first
    time you open "Size Buildings.command".
 
+Drawing buildings in Google Earth
+1. Draw each roof outline as a polygon (Google Earth Pro: Add > Polygon;
+   Google Earth web: a project's "Draw line or shape"). Its name becomes the
+   building name in the results.
+   - Default is multifamily. Put "commercial" in the name or description for a
+     commercial building, or "R-3" for townhomes.
+2. Optional, for better accuracy: inside each roof, draw rooftop equipment as
+   polygons named HVAC, Vent, Skylight, Hatch, Standpipe or Smoke vent
+   (e.g. "HVAC 3"). If you draw any on a roof, draw all of them.
+3. Optional, for pitched roofs: draw each roof plane as a polygon named
+   "plane <pitch> <downslope direction>", e.g. "plane 6/12 S" or "plane 25 180".
+   Without planes, the roof is treated as flat.
+4. Save: Google Earth Pro: right-click the folder > Save Place As (.kmz).
+   Google Earth web: project menu > Export as KML file.
+
 Each time you size buildings
 1. Double-click "Size Buildings.command".
-2. Drag your buildings .geojson file into the window and press Return.
+2. Drag your .kml or .kmz file into the window and press Return.
 3. A Finder window opens with two new files next to your input:
-     <name>_results.csv      one row per building (Excel or Numbers)
-     <name>_layouts.geojson  panel placements; drag onto https://geojson.io to view
+     <name>_results.csv  one row per building (Excel or Numbers)
+     <name>_layouts.kml  panel placements; double-click to view in Google Earth
 
-To try it now, drag in examples/sample_buildings.geojson. Its two buildings are
+To try it now, drag in examples/sample_buildings.kml. Its two buildings are
 made up for testing; they are not real sites.
 
 Optional

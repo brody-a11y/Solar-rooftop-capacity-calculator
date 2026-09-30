@@ -83,6 +83,14 @@ Set racking to what you actually spec: `--flat-racking east_west|south_tilt|flus
 The defaults (east-west at 10°, GCR 0.90, 550 W 2.278 × 1.134 m module) are
 placeholders. They are not taken from a particular racking datasheet.
 
+### Input from Google Earth (KML/KMZ)
+
+Draw roofs as polygons in Google Earth Pro or Google Earth web and save as KML/KMZ.
+Naming rules are in `START HERE.txt` and `rooftop_solar/sources/kml_io.py`:
+roof outline = any name; `HVAC`, `Vent`, `Skylight`, `Hatch`, `Standpipe`,
+`Smoke vent` = obstructions inside a roof; `plane 6/12 S` = pitched plane. When
+the layout output ends in `.kml`, it opens in Google Earth.
+
 ### Input GeoJSON
 
 Each feature's `role` property sets what it is:

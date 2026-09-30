@@ -1,8 +1,8 @@
 #!/bin/bash
-# Double-click, then drag a buildings .geojson file into the window.
+# Double-click, then drag a Google Earth .kml/.kmz (or .geojson) file into the window.
 # Results are written next to the input file:
-#   <name>_results.csv     sizes per building (opens in Excel or Numbers)
-#   <name>_layouts.geojson panel placements (drag onto geojson.io to view)
+#   <name>_results.csv  sizes per building (opens in Excel or Numbers)
+#   <name>_layouts.kml  panel placements (double-click to open in Google Earth)
 # Optional:
 #   calibration.json in the same folder as the input is applied automatically.
 #   A Google Solar API key saved in ~/.rooftop-solar/google_api_key turns on the Google cross-check.
@@ -16,7 +16,7 @@ if [ ! -x "$CLI" ]; then
   finish 1
 fi
 
-echo "Drag your buildings .geojson file into this window, then press Return:"
+echo "Drag your Google Earth file (.kml or .kmz) into this window, then press Return:"
 read -r IN
 # Undo the escaping macOS adds when a file is dragged into Terminal.
 IN="$(printf '%s' "$IN" | sed -e 's/[[:space:]]*$//' -e "s/^'\(.*\)'$/\1/" -e 's/\\\(.\)/\1/g')"
@@ -28,7 +28,7 @@ fi
 DIR="$(dirname "$IN")"
 BASE="$(basename "$IN")"
 BASE="${BASE%.*}"
-ARGS=(size --buildings "$IN" --out "$DIR/${BASE}_results.csv" --layouts "$DIR/${BASE}_layouts.geojson")
+ARGS=(size --buildings "$IN" --out "$DIR/${BASE}_results.csv" --layouts "$DIR/${BASE}_layouts.kml")
 
 if [ -f "$DIR/calibration.json" ]; then
   echo "Using calibration.json from the same folder."

@@ -14,13 +14,28 @@ from .fire_code import FireCodeRules
 from .models import Module, Racking
 from .pipeline import ReviewPolicy, estimate_site
 from .sizing import DesignConfig, GeometricEstimator
-from .sources.geojson_io import load_buildings, write_layouts
+from .sources.geojson_io import load_buildings as load_geojson_buildings
+from .sources.geojson_io import write_layouts as write_geojson_layouts
+from .sources.kml_io import load_kml_buildings, write_kml_layouts
 from .sources.google_solar import GoogleFilteredEstimator, GoogleInsights, GoogleSolarClient
 
 
 def _read_csv(path: str) -> list[dict]:
     with open(path, newline="") as f:
         return list(csv.DictReader(f))
+
+
+def load_buildings(path: str):
+    if path.lower().endswith((".kml", ".kmz")):
+        return load_kml_buildings(path)
+    return load_geojson_buildings(path)
+
+
+def write_layouts(results, path: str) -> None:
+    if path.lower().endswith(".kml"):
+        write_kml_layouts(results, path)
+    else:
+        write_geojson_layouts(results, path)
 
 
 def cmd_size(args: argparse.Namespace) -> int:
@@ -49,7 +64,11 @@ def cmd_size(args: argparse.Namespace) -> int:
         client = GoogleSolarClient(key, cache_dir=args.google_cache)
         google = GoogleFilteredEstimator(geometric)
 
-    buildings = load_buildings(args.buildings)
+    try:
+        buildings = load_buildings(args.buildings)
+    except (ValueError, KeyError) as exc:
+        print(f"Couldn't read {args.buildings}: {exc}", file=sys.stderr)
+        return 2
 
     def run(b):
         insights = None
@@ -119,10 +138,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="rooftop-solar", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
 
-    s = sub.add_parser("size", help="size every building in a GeoJSON file")
-    s.add_argument("--buildings", required=True, help="GeoJSON of footprints / roof planes / obstructions")
+    s = sub.add_parser("size", help="size every building in a KML/KMZ or GeoJSON file")
+    s.add_argument("--buildings", required=True, help="Google Earth KML/KMZ or GeoJSON of roofs, planes and obstructions")
     s.add_argument("--out", required=True, help="output CSV")
-    s.add_argument("--layouts", help="optional GeoJSON of placed modules for QA")
+    s.add_argument("--layouts", help="optional placed-module output for QA (.kml for Google Earth, else GeoJSON)")
     s.add_argument("--calibration", help="calibration JSON from `calibrate`")
     s.add_argument("--google", action="store_true", help="cross-check with Google Solar API (billed per uncached call)")
     s.add_argument("--google-key-env", default="GOOGLE_SOLAR_API_KEY")

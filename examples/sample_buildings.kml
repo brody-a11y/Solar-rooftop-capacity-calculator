@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
+<Document>
+	<name>sample_buildings.kml</name>
+	<Folder>
+		<name>Sample sites (made up)</name>
+		<Placemark>
+			<name>Sample Warehouse</name><description>commercial - made up for testing</description>
+			<Polygon><outerBoundaryIs><LinearRing><coordinates>
+				-118.24950482,34.04975269,0 -118.24950482,34.05024731,0 -118.25049518,34.05024731,0 -118.25049518,34.04975269,0 -118.24950482,34.04975269,0
+			</coordinates></LinearRing></outerBoundaryIs></Polygon>
+		</Placemark>
+		<Placemark>
+			<name>HVAC 1</name>
+			<Polygon><outerBoundaryIs><LinearRing><coordinates>
+				-118.25020037,34.05003155,0 -118.25020037,34.05005860,0 -118.25023286,34.05005860,0 -118.25023286,34.05003155,0 -118.25020037,34.05003155,0
+			</coordinates></LinearRing></outerBoundaryIs></Polygon>
+		</Placemark>
+		<Placemark>
+			<name>HVAC 2</name>
+			<Polygon><outerBoundaryIs><LinearRing><coordinates>
+				-118.24982129,34.04991436,0 -118.24982129,34.04994140,0 -118.24985379,34.04994140,0 -118.24985379,34.04991436,0 -118.24982129,34.04991436,0
+			</coordinates></LinearRing></outerBoundaryIs></Polygon>
+		</Placemark>
+		<Placemark>
+			<name>Hatch</name>
+			<Polygon><outerBoundaryIs><LinearRing><coordinates>
+				-118.24999134,34.05012802,0 -118.24999134,34.05014244,0 -118.25000866,34.05014244,0 -118.25000866,34.05012802,0 -118.24999134,34.05012802,0
+			</coordinates></LinearRing></outerBoundaryIs></Polygon>
+		</Placemark>
+		<Placemark>
+			<name>Sample Apartments</name><description>multifamily - made up for testing</description>
+			<Polygon><outerBoundaryIs><LinearRing><coordinates>
+				-118.24978338,34.05101872,0 -118.24978338,34.05114494,0 -118.25021662,34.05114494,0 -118.25021662,34.05101872,0 -118.24978338,34.05101872,0
+			</coordinates></LinearRing></outerBoundaryIs></Polygon>
+		</Placemark>
+		<Placemark>
+			<name>plane 5/12 S</name>
+			<Polygon><outerBoundaryIs><LinearRing><coordinates>
+				-118.24978338,34.05101872,0 -118.24978338,34.05108183,0 -118.25021662,34.05108183,0 -118.25021662,34.05101872,0 -118.24978338,34.05101872,0
+			</coordinates></LinearRing></outerBoundaryIs></Polygon>
+		</Placemark>
+		<Placemark>
+			<name>plane 5/12 N</name>
+			<Polygon><outerBoundaryIs><LinearRing><coordinates>
+				-118.24978338,34.05108183,0 -118.24978338,34.05114494,0 -118.25021662,34.05114494,0 -118.25021662,34.05108183,0 -118.24978338,34.05108183,0
+			</coordinates></LinearRing></outerBoundaryIs></Polygon>
+		</Placemark>
+	</Folder>
+</Document>
+</kml>
