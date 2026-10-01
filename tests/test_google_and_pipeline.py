@@ -194,3 +194,27 @@ def test_energy_cutoff_uses_typical_panel_not_a_few_outliers():
     base = GoogleFilteredEstimator(GeometricEstimator(design=flush)).estimate(b, ins)
     cut = GoogleFilteredEstimator(GeometricEstimator(design=dataclasses.replace(flush, min_panel_energy_ratio=0.9))).estimate(b, ins)
     assert cut.module_count == base.module_count  # uniform roof kept despite the outliers
+
+
+def test_raised_racking_fills_small_equipment_gaps_not_large_openings():
+    from shapely.geometry import Point as P
+
+    b = Building("a", centered_box_ft(200, 100), Occupancy.COMMERCIAL)
+    flush = DesignConfig(flat_racking=Racking.FLUSH, min_panel_energy_ratio=0.0)
+
+    def with_hole(radius_m):
+        resp = google_response()
+        keep = []
+        for p in resp["solarPotential"]["solarPanels"]:
+            x, y = FRAME.point_to_local(p["center"]["longitude"], p["center"]["latitude"])
+            if P(x - 15, y).distance(P(0, 0)) > radius_m:  # hole centred 15 m west of middle
+                keep.append(p)
+        resp["solarPotential"]["solarPanels"] = keep
+        return GoogleFilteredEstimator(GeometricEstimator(design=flush)).estimate(b, GoogleInsights.from_response(resp))
+
+    small = with_hole(2.0)   # ~4 m HVAC-sized gap
+    large = with_hole(9.0)   # ~18 m opening, e.g. a courtyard
+    assert small.details["raised_racking_extra_modules"] > 0
+    lost_small = with_hole(0.0).module_count - small.module_count
+    assert small.details["raised_racking_extra_modules"] >= 0.6 * lost_small
+    assert large.details["raised_racking_extra_modules"] < 0.2 * (with_hole(0.0).module_count - large.module_count)

@@ -30,6 +30,10 @@ Sizing a list of properties (no drawing needed)
      <name>_results_buildings.csv  one row per building found
      <name>_layouts.kml            roof outlines (yellow) and panels; open in
                                    Google Earth to check the right roof was used
+   Two MaxFit numbers per property: dc_kw (standard racking, panels go
+   around rooftop equipment) and maxfit_raised_racking_kw (raised racking
+   also spans small equipment gaps on flat roofs; an estimate). rooftop_kw
+   and carport_kw split dc_kw.
    Check the "reasons" column: it says why a row needs review, e.g. the
    address matched a building 30 m away, or two buildings were equally close.
 

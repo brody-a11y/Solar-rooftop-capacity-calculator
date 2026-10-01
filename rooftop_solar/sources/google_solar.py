@@ -302,6 +302,7 @@ class GoogleFilteredEstimator:
         poleward_m2 = 0.0  # pitched panels facing away from the sun (north in the US)
         low_yield_m2 = 0.0  # panels producing well below the building's best ones
         kept_kwh: list[float] = []
+        kept_flat = []  # plan-view rectangles of kept panels on flat segments
         # Reference = 90th-percentile panel, not the single best: a few unusually
         # sunny edge panels on a big flat roof would otherwise set the bar so high
         # that most of a usable roof is dropped.
@@ -328,6 +329,8 @@ class GoogleFilteredEstimator:
                 continue
             kept.append(rect)
             kept_kwh.append(p.yearly_kwh)
+            if is_flat:
+                kept_flat.append(rect)
             area = across * down
             kept_surface_m2 += area
             kinds.add("flat" if is_flat else "pitched")
@@ -342,6 +345,7 @@ class GoogleFilteredEstimator:
         # pathways and not clipped to our footprint (which may be the wrong building).
         unclipped_m2 = (all_surface_m2 - all_flat_m2) + all_flat_m2 * flat_density
         unclipped_kw = int(unclipped_m2 // design.module.area_m2) * design.module.watts_dc / 1000.0
+        raised_extra = self._raised_racking_modules(kept_flat, zone, flat_density, design)
 
         flags = []
         if 0 < count < design.min_modules_per_structure:
@@ -366,6 +370,7 @@ class GoogleFilteredEstimator:
             details={
                 "google_panels_total": len(insights.panels),
                 "google_unclipped_kw": unclipped_kw,
+                "raised_racking_extra_modules": raised_extra,
                 "google_panels_kept": len(kept),
                 "google_max_array_panels": insights.max_array_panels,
                 "google_buildings_merged": insights.buildings_merged,
@@ -381,6 +386,28 @@ class GoogleFilteredEstimator:
             layout=[frame.to_lonlat(r) for r in kept],
             footprint=building.footprint,
         )
+
+    @staticmethod
+    def _raised_racking_modules(flat_rects, zone, flat_density: float, design) -> int:
+        """Extra modules if raised racking spans equipment gaps on flat roofs.
+
+        Only fully enclosed holes in Google's flat-roof layout count: gaps
+        surrounded by panels on all sides and narrow enough to span (no wider
+        than 2 x raised_gap_m). Normal panel spacing (under ~1 m) is not a gap.
+        Equipment at roof edges, courtyards and mechanical wells stay empty, so
+        this errs low. An estimate: Google doesn't report equipment heights.
+        """
+        if not flat_rects or design.raised_gap_m <= 0:
+            return 0
+        g = design.raised_gap_m
+        layout = unary_union(flat_rects).buffer(0.5, join_style="mitre").buffer(-0.5, join_style="mitre")
+        extra_m2 = 0.0
+        for part in polygons(layout):
+            for ring in part.interiors:
+                hole = Polygon(ring)
+                if hole.buffer(-g).is_empty:  # narrow enough to span
+                    extra_m2 += hole.intersection(zone).area
+        return int(extra_m2 * flat_density // design.module.area_m2)
 
     def _poleward(self, azimuth_deg: float, lat: float) -> bool:
         pole = 0.0 if lat >= 0 else 180.0

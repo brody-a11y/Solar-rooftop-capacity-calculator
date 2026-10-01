@@ -119,6 +119,17 @@ class SiteOutcome:
         flags = self.counted or [True] * len(self.estimates)
         return list(zip(self.buildings, self.estimates, flags))
 
+    def raised_extra_kw(self, rooftop_only: bool = False) -> float:
+        """kW added if raised racking spans equipment gaps (counted structures)."""
+        total = 0.0
+        for b, e, c in self._triples():
+            if not c or not e.google or (rooftop_only and b.structure != "building"):
+                continue
+            mods = e.google.details.get("raised_racking_extra_modules", 0)
+            per_module_kw = e.dc_kw / e.primary.module_count if e.primary and e.primary.module_count else 0.0
+            total += mods * per_module_kw
+        return total
+
     def rooftop_estimates(self):
         """Counted estimates on buildings only (no carports or garages)."""
         return [e for b, e, c in self._triples() if c and b.structure == "building"]
@@ -156,6 +167,7 @@ class SiteOutcome:
             "module_count": sum(e.primary.module_count for e in self._counted() if e.primary),
             "north_faces_kw_not_counted": round(sum(e.google.details.get("poleward_face_kw", 0) for e in self._counted()
                                                     if e.google and e.google.details.get("poleward_faces_excluded")), 1),
+            "maxfit_raised_racking_kw": round(self.dc_kw + self.raised_extra_kw(), 2),
             "rooftop_kw": round(sum(e.dc_kw for b, e, c in self._triples() if c and b.structure == "building"), 2),
             "carport_kw": round(sum(e.dc_kw for b, e, c in self._triples() if c and b.structure != "building"), 2),
             "low_yield_kw_not_counted": round(sum(e.google.details.get("low_yield_kw", 0) for e in self._counted() if e.google), 1),

@@ -45,6 +45,9 @@ class DesignConfig:
     # Structures that can't take at least this many modules in total are not
     # designed (Ivy rule: 5 or fewer panels on a structure is never worth it).
     min_modules_per_structure: int = 6
+    # Raised-racking MaxFit: equipment gaps up to 2x this width inside a flat-roof
+    # layout are assumed spannable (an assumption; heights aren't known).
+    raised_gap_m: float = 3.0
 
 
 def _module_dims(module: Module, orientation: str) -> tuple[float, float]:
