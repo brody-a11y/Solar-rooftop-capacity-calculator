@@ -200,3 +200,24 @@ def test_google_fallback_ignores_tiny_structures(tmp_path, footprints, monkeypat
     with out.open() as f:
         row = list(csv.DictReader(f))[0]
     assert "no_building_within_40m" in row["reasons"] and row["tool_kw"] == ""
+
+
+def test_floor_designs_feed_below_check_only():
+    from rooftop_solar.accuracy import summary
+
+    def row(site, kind, err, review=""):
+        r = {"site": site, "kind": kind, "manual_review": review}
+        for label in ("tool", "raised", "footprint_only", "google", "google_unclipped"):
+            r[f"{label}_kw"], r[f"{label}_err"], r[f"{label}_within"] = 100.0, f"{err:+.0%}", abs(err) <= 0.10
+        return r
+
+    text = summary([row("A", "maxfit", 0.05), row("B", "floor", 0.40), row("C", "floor", -0.30),
+                    row("D", "maxfit", -0.50, "google_imagery_2015-01_11_years_old")])
+    assert "tool              1 of 2 MaxFit designs" in text  # floors not in the +/-10% count
+    assert "flagged for manual review: D" in text
+    assert "NOT flagged (the misses that matter): C" in text
+
+
+def test_best_error_on_floor_uses_largest_design():
+    err, design = _best_error(100.0, [{"kw": 90}, {"kw": 120}], module_w=550, floor=True)
+    assert design["kw"] == 120 and err < 0

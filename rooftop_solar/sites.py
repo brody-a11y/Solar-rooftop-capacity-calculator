@@ -11,6 +11,7 @@ import csv
 import math
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import date
 
 from .calibration import Calibrator
 from .geometry import LocalFrame, principal_axes
@@ -110,6 +111,7 @@ class SiteOutcome:
     reasons: list[str] = field(default_factory=list)
     parcel: object | None = None  # regrid.Parcel when parcel lookup succeeded
     counted: list[bool] = field(default_factory=list)  # per estimate: included in the site total
+    manual_review: list[str] = field(default_factory=list)  # low-confidence reasons a person should look at
 
     def _counted(self):
         flags = self.counted or [True] * len(self.estimates)
@@ -173,6 +175,8 @@ class SiteOutcome:
             "low_yield_kw_not_counted": round(sum(e.google.details.get("low_yield_kw", 0) for e in self._counted() if e.google), 1),
             "uncounted_buildings_kw": round(sum(e.dc_kw for e in self.estimates) - self.dc_kw, 1),
             "roof_area_m2": round(sum(e.primary.gross_roof_area_m2 for e in self._counted() if e.primary), 1),
+            "manual_review": bool(self.manual_review),
+            "manual_review_reason": ";".join(self.manual_review),
             "needs_review": bool(reasons),
             "reasons": ";".join(reasons),
         }
@@ -232,6 +236,7 @@ def group_rows(outcomes: list["SiteOutcome"]) -> list[dict]:
             "dc_kw": round(sum(r["dc_kw"] for r in member_rows), 2),
             "raw_kw": round(sum(r["raw_kw"] for r in member_rows), 2),
             "module_count": sum(r["module_count"] for r in member_rows),
+            "manual_review": any(r["manual_review"] for r in member_rows),
             "needs_review": any(r["needs_review"] for r in member_rows),
             "reasons": ";".join(reasons),
         })
@@ -291,6 +296,9 @@ def size_sites(
     max_parcel_buildings: int = 120,
     include_carports: bool = True,
     carport_min_energy_ratio: float = 0.8,
+    stale_imagery_years: float = 6.0,
+    min_imagery_coverage: float = 0.5,
+    today: date | None = None,
 ) -> list[SiteOutcome]:
     outcomes = [SiteOutcome(s) for s in sites]
 
@@ -455,4 +463,35 @@ def size_sites(
             o.reasons.append(f"not_counted_{shaded}_shaded_carports")
         if no_data and not any("without_google_data" in r for r in o.reasons):
             o.reasons.append(f"not_counted_{no_data}_carports_without_google_data")
+    for o in outcomes:
+        o.manual_review = imagery_concerns(o, stale_imagery_years, min_imagery_coverage, today or date.today())
     return outcomes
+
+
+def imagery_concerns(o: SiteOutcome, stale_years: float, min_coverage: float, today: date) -> list[str]:
+    """Reasons the site total can't be trusted without a look at current imagery.
+
+    Kept narrow on purpose (it should catch a few percent of sites, not most):
+    - no building found, or none with Google data (sized from outlines only);
+    - Google panels cover under min_coverage of what the footprints hold: usually
+      imagery taken before the building or its roof was finished;
+    - Google imagery older than stale_years.
+    """
+    if not o.buildings:
+        return ["no_building_found"]
+    counted = [(b, e) for b, e, c in o._triples() if c]
+    with_google = [(b, e) for b, e in counted if e.google]
+    if not with_google:
+        return ["no_google_imagery_sized_from_outline"]
+    out = []
+    goo = sum(e.google.dc_kw for _b, e in with_google)
+    geo = sum(e.geometric.dc_kw for _b, e in with_google if e.geometric)
+    if geo > 0 and goo < min_coverage * geo:
+        out.append(f"google_sees_{goo / geo:.0%}_of_footprint_capacity_imagery_may_predate_building")
+    dates = [e.google.details.get("imagery_date", "") for _b, e in with_google]
+    years = [int(d[:4]) + (int(d[5:7]) - 1) / 12 for d in dates if d and d[:4].isdigit() and int(d[:4]) > 0]
+    if years:
+        age = today.year + (today.month - 1) / 12 - min(years)
+        if age > stale_years:
+            out.append(f"google_imagery_{min(dates)}_{age:.0f}_years_old")
+    return out

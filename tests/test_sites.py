@@ -202,3 +202,27 @@ def test_google_fallback_looks_around_a_pin_on_the_sidewalk(footprints):
                      workers=1, progress=lambda *_: None)
     assert "footprint_from_google_imagery_check_date" in out[0].reasons
     assert out[0].dc_kw > 1.0
+
+
+def test_imagery_concerns_flag_stale_or_sparse_google_data():
+    from datetime import date
+
+    from rooftop_solar.models import SizingResult
+    from rooftop_solar.pipeline import SiteEstimate
+    from rooftop_solar.sites import Site, SiteOutcome, imagery_concerns
+    from .helpers import centered_box_ft
+    from rooftop_solar import Building
+
+    def outcome(google_kw, footprint_kw, imagery):
+        res = lambda kw, method, d: SizingResult("b", method, kw, int(kw * 2), 1, 1, "flat", details=d)
+        goo = res(google_kw, "google_filtered", {"imagery_date": imagery})
+        est = SiteEstimate("b", google_kw, google_kw, "google_filtered", 1, "none", None, False,
+                           primary=goo, geometric=res(footprint_kw, "geometric", {}), google=goo)
+        b = Building("b", centered_box_ft(100, 100), Occupancy.R2)
+        return SiteOutcome(Site("s", ""), buildings=[b], estimates=[est], counted=[True])
+
+    today = date(2026, 10, 1)
+    assert imagery_concerns(outcome(90, 100, "2023-05-01"), 6, 0.5, today) == []
+    assert "imagery_may_predate_building" in imagery_concerns(outcome(16, 37, "2023-05-01"), 6, 0.5, today)[0]
+    assert imagery_concerns(outcome(90, 100, "2018-03-01"), 6, 0.5, today) == ["google_imagery_2018-03-01_9_years_old"]
+    assert imagery_concerns(SiteOutcome(Site("s", "")), 6, 0.5, today) == ["no_building_found"]

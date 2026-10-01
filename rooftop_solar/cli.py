@@ -156,8 +156,10 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
     if args.layouts:
         write_layouts([e.primary for o in outcomes for e in o.estimates if e.primary], args.layouts)
     found = sum(1 for o in outcomes if o.buildings)
-    review = sum(r["needs_review"] for r in site_rows)
-    print(f"{len(sites)} sites: {found} matched to buildings, {review} flagged for review -> {args.out}")
+    manual = [r for r in site_rows if r["manual_review"]]
+    print(f"{len(sites)} sites: {found} matched to buildings -> {args.out}")
+    print(f"{len(manual)} of {len(sites)} ({len(manual) / max(len(sites), 1):.0%}) need a manual look at current imagery "
+          "(manual_review column; reasons in manual_review_reason)")
     return 0
 
 
@@ -200,10 +202,12 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
     if args.layouts:
         write_layouts([e.primary for o in outcomes for e in o._counted() if e.primary], args.layouts)
     print()
-    print(f"{'site':20} {'designs kW':16} {'standard':>13} {'raised rack':>13} {'footprint':>13}")
+    print(f"{'site':20} {'designs kW':17} {'standard':>13} {'raised rack':>13} {'footprint':>13}  review")
     for r in rows:
         cells = [f"{str(r[k + '_kw']):>7} {r[k + '_err']:>5}" for k in ("tool", "raised", "footprint_only")]
-        print(f"{r['site'][:20]:20} {r['designs_kw'][:16]:16} {' '.join(cells)}")
+        designs = (">=" if r["kind"] == "floor" else "") + r["designs_kw"]
+        print(f"{r['site'][:20]:20} {designs[:17]:17} {' '.join(cells)}  {'YES' if r['manual_review'] else ''}")
+    print("(>= : design sized to load or budget, so MaxFit should be at least this)")
     print()
     print(summary(rows))
     if len(sweep) > 1:
@@ -269,7 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
     design.add_argument("--workers", type=int, default=8)
     design.add_argument("--include-north-faces", action="store_true",
                         help="keep Google panels on north-facing pitched roof faces (excluded by default)")
-    design.add_argument("--min-panel-energy-ratio", type=float, default=0.7,
+    design.add_argument("--min-panel-energy-ratio", type=float, default=0.6,
                         help="drop Google panels producing less than this fraction of the building's 90th-percentile panel")
     design.add_argument("--min-modules-per-structure", type=int, default=6,
                         help="structures that fit fewer modules than this in total are not designed")
@@ -318,7 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--geocoder", choices=["auto", "google"], default="auto")
     a.add_argument("--search-m", type=float, default=40.0)
     a.add_argument("--campus-radius-m", type=float, default=0.0)
-    a.add_argument("--energy-ratios", default="0,0.7,0.8,0.85,0.9,0.95",
+    a.add_argument("--energy-ratios", default="0,0.6,0.7,0.8,0.9",
                    help="comma-separated panel-yield cutoffs to compare (uses saved Google answers, no extra cost)")
     a.set_defaults(func=cmd_accuracy)
 

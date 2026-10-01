@@ -6,6 +6,10 @@ name, address, latitude, longitude, true_kw, module_w (one row per design).
 A site can have several designs (different designers' max fits); a prediction
 counts as within tolerance if it is within tolerance of any of them.
 
+A site with "kind": "floor" (CSV column kind=floor) has only designs sized to
+load, budget or a goal, not to the roof. Those are minimums: absolute MaxFit
+should come in at or above them, so they only feed the below-design check.
+
 Predictions are made with one module size, so each design's kW is compared
 after scaling the prediction by (design module W / tool module W). That assumes
 similar module dimensions, which holds only roughly across 530-635 W modules.
@@ -31,7 +35,8 @@ def load_truth(path: str | Path) -> dict[str, dict]:
             name = r.get("name") or r.get("site") or r.get("property")
             if not name or not r.get("true_kw"):
                 continue
-            entry = truth.setdefault(name, {"address": r.get("address", ""), "lat": None, "lon": None, "truths": []})
+            entry = truth.setdefault(name, {"address": r.get("address", ""), "lat": None, "lon": None, "truths": [],
+                                            "kind": r.get("kind") or "maxfit"})
             if r.get("latitude") and r.get("longitude"):
                 entry["lat"], entry["lon"] = float(r["latitude"]), float(r["longitude"])
             entry["truths"].append({
@@ -46,13 +51,13 @@ def truth_sites(truth: dict[str, dict]) -> list[Site]:
     return [Site(name, t.get("address") or "", t.get("lat"), t.get("lon")) for name, t in truth.items()]
 
 
-def _best_error(pred_kw: float, truths: list[dict], module_w: float) -> tuple[float, dict]:
-    """Signed error against the closest design, after module-wattage scaling."""
+def _best_error(pred_kw: float, truths: list[dict], module_w: float, floor: bool = False) -> tuple[float, dict]:
+    """Signed error against the closest design (the largest, for floors), after module-wattage scaling."""
     best = None
     for t in truths:
         scaled = pred_kw * ((t.get("module_w") or module_w) / module_w)
         err = (scaled - t["kw"]) / t["kw"]
-        if best is None or abs(err) < abs(best[0]):
+        if best is None or (err < best[0] if floor else abs(err) < abs(best[0])):
             best = (err, t)
     return best
 
@@ -68,15 +73,18 @@ def compare(truth: dict[str, dict], outcomes: list[SiteOutcome], module_w: float
         goo = sum(e.google.dc_kw for e in est if e.google) if any(e.google for e in est) else None
         raw = sum(e.google.details.get("google_unclipped_kw", 0) for e in est if e.google) if goo is not None else None
         raised = (final + o.raised_extra_kw(rooftop_only=True)) if o and final else None
+        floor = t.get("kind") == "floor"
         row = {
             "site": name,
+            "kind": "floor" if floor else "maxfit",
+            "manual_review": ";".join(o.manual_review) if o else "",
             "designs_kw": " / ".join(f"{d['kw']:g}" + (f"@{d['module_w']:g}W" if d.get("module_w") else "") for d in t["truths"]),
             "buildings_found": len(o.buildings) if o else 0,
             "location": f"{o.geocode.source}:{o.geocode.precision}" if o and o.geocode else "",
         }
         for label, kw in (("tool", final), ("raised", raised), ("footprint_only", geo), ("google", goo), ("google_unclipped", raw)):
             if kw:
-                err, _ = _best_error(kw, t["truths"], module_w)
+                err, _ = _best_error(kw, t["truths"], module_w, floor)
                 row[f"{label}_kw"] = round(kw, 1)
                 row[f"{label}_err"] = f"{err:+.0%}"
                 row[f"{label}_within"] = abs(err) <= tolerance
@@ -90,14 +98,22 @@ def compare(truth: dict[str, dict], outcomes: list[SiteOutcome], module_w: float
 
 def summary(rows: list[dict], tolerance: float = 0.10) -> str:
     lines = []
+    maxfit = [r for r in rows if r["kind"] == "maxfit"]
     for label in ("tool", "raised", "footprint_only", "google", "google_unclipped"):
-        sized = [r for r in rows if r[f"{label}_kw"] != ""]
+        sized = [r for r in maxfit if r[f"{label}_kw"] != ""]
         hits = sum(1 for r in sized if r[f"{label}_within"])
-        lines.append(f"{label:17} {hits} of {len(sized)} sized sites within ±{tolerance:.0%} ({len(rows) - len(sized)} not sized)")
-    # Reference designs are often trimmed to the most cost-efficient roofs, i.e. lower
-    # bounds on absolute MaxFit: the meaningful failure is coming in below them.
+        lines.append(f"{label:17} {hits} of {len(sized)} MaxFit designs within ±{tolerance:.0%} ({len(maxfit) - len(sized)} not sized)")
+    # Reference designs are often trimmed to the most cost-efficient roofs or sized
+    # to load, i.e. lower bounds on absolute MaxFit: the meaningful failure is
+    # coming in below them.
     sized = [r for r in rows if r["tool_err"]]
-    below = [r["site"] for r in sized if float(r["tool_err"].rstrip("%")) / 100 < -tolerance]
-    lines.append(f"\nIf designs are lower bounds (cost-trimmed): {len(sized) - len(below)} of {len(sized)} sites at or above "
-                 f"design (within -{tolerance:.0%}); below: {', '.join(below) or 'none'}")
+    below = [r for r in sized if float(r["tool_err"].rstrip("%")) / 100 < -tolerance]
+    caught = [r["site"] for r in below if r["manual_review"]]
+    missed = [r["site"] for r in below if not r["manual_review"]]
+    flagged = sum(1 for r in rows if r["manual_review"])
+    lines.append(f"\nDesigns as lower bounds (all {len(sized)} sites incl. {len(sized) - len([r for r in sized if r['kind'] == 'maxfit'])} "
+                 f"load-sized floors): {len(sized) - len(below)} at or above design (within -{tolerance:.0%})")
+    lines.append(f"  below design, flagged for manual review: {', '.join(caught) or 'none'}")
+    lines.append(f"  below design, NOT flagged (the misses that matter): {', '.join(missed) or 'none'}")
+    lines.append(f"Flagged for manual review: {flagged} of {len(rows)} sites")
     return "\n".join(lines)
