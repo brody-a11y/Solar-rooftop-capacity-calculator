@@ -253,7 +253,12 @@ class GoogleSolarClient:
         key = hashlib.sha1(f"{lat:.7f},{lon:.7f},{required_quality}".encode()).hexdigest()
         path = self.cache_dir / f"{key}.json" if self.cache_dir else None
         if path and path.exists():
-            return json.loads(path.read_text())
+            data = json.loads(path.read_text())
+            if "_http_status" in data:  # a saved 404: no building at this point
+                resp = requests.Response()
+                resp.status_code = data["_http_status"]
+                raise requests.HTTPError(f"{resp.status_code} (cached)", response=resp)
+            return data
         resp = self.session.get(
             API_URL,
             params={
@@ -264,6 +269,10 @@ class GoogleSolarClient:
             },
             timeout=self.timeout,
         )
+        if resp.status_code == 404 and path:
+            # Google has no building here; remember that so reruns don't ask again.
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"_http_status": 404}))
         resp.raise_for_status()
         data = resp.json()
         if path:

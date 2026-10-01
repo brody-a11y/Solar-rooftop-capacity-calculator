@@ -130,3 +130,25 @@ def test_cli_size_calibrate_evaluate(tmp_path):
         rows = list(csv.DictReader(f))
     assert rows[0]["calibration_source"] == "segment"
     assert main(["evaluate", "--results", str(out), "--truth", str(truth)]) == 0
+
+
+def test_google_client_caches_not_found(tmp_path, monkeypatch):
+    import requests
+    from rooftop_solar.sources.google_solar import GoogleSolarClient
+
+    calls = []
+
+    def fake_get(self, url, params=None, timeout=None):
+        calls.append(params)
+        r = requests.Response()
+        r.status_code = 404
+        r.url = url
+        return r
+
+    monkeypatch.setattr(requests.Session, "get", fake_get)
+    client = GoogleSolarClient("k", cache_dir=tmp_path)
+    for _ in range(2):
+        with pytest.raises(requests.HTTPError) as exc:
+            client.building_insights(34.0, -118.0)
+        assert exc.value.response.status_code == 404
+    assert len(calls) == 1
