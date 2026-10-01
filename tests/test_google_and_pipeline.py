@@ -238,3 +238,28 @@ def test_raised_racking_fills_equipment_notch_open_to_one_side():
     assert full.details["raised_racking_extra_modules"] == 0  # full roof: no gaps, no edge strips
     lost = full.module_count - notch.module_count
     assert 0.6 * lost <= notch.details["raised_racking_extra_modules"] <= 1.1 * lost
+
+
+def test_raised_racking_does_not_fill_shaded_spots():
+    from shapely.geometry import Point as P
+
+    b = Building("a", centered_box_ft(200, 100), Occupancy.COMMERCIAL)
+    resp = google_response()
+    for p in resp["solarPotential"]["solarPanels"]:
+        x, y = FRAME.point_to_local(p["center"]["longitude"], p["center"]["latitude"])
+        p["yearlyEnergyDcKwh"] = 300.0 if P(x - 15, y).distance(P(0, 0)) <= 2.0 else 600.0  # shaded patch
+    design = DesignConfig(flat_racking=Racking.FLUSH, min_panel_energy_ratio=0.7)
+    r = GoogleFilteredEstimator(GeometricEstimator(design=design)).estimate(b, GoogleInsights.from_response(resp))
+    assert r.details["low_yield_kw"] > 0
+    assert r.details["raised_racking_extra_modules"] == 0 and r.raised_areas == []
+
+
+def test_kml_draws_raised_racking_areas(tmp_path):
+    from rooftop_solar.sources.kml_io import write_kml_layouts
+    from shapely.geometry import box
+
+    r = GeometricEstimator().estimate(Building("a", centered_box_ft(200, 100), Occupancy.COMMERCIAL))
+    r.raised_areas = [box(-118.0, 34.0, -117.9999, 34.0001)]
+    path = tmp_path / "l.kml"
+    write_kml_layouts([r], path)
+    assert path.read_text().count("raised racking only") == 1

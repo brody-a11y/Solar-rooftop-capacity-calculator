@@ -189,6 +189,8 @@ def write_kml_layouts(results: list[SizingResult], path: str | Path) -> None:
         "<PolyStyle><color>cc8b3d1f</color></PolyStyle></Style>",
         '<Style id="roof"><LineStyle><color>ff00ffff</color><width>2</width></LineStyle>'
         "<PolyStyle><fill>0</fill></PolyStyle></Style>",
+        '<Style id="raised"><LineStyle><color>ff0080ff</color><width>1</width></LineStyle>'
+        "<PolyStyle><color>990080ff</color></PolyStyle></Style>",
     ]
     for r in results:
         parts.append(f"<Folder><name>{escape(r.building_id)} - {r.dc_kw:.1f} kW DC ({r.module_count} modules)</name>")
@@ -202,6 +204,13 @@ def write_kml_layouts(results: list[SizingResult], path: str | Path) -> None:
         for poly in r.layout:
             parts.append(
                 "<Placemark><styleUrl>#module</styleUrl><Polygon><outerBoundaryIs><LinearRing>"
+                f"<coordinates>{_ring(poly.exterior.coords)}</coordinates>"
+                "</LinearRing></outerBoundaryIs></Polygon></Placemark>"
+            )
+        for poly in r.raised_areas:
+            parts.append(
+                "<Placemark><name>raised racking only</name><styleUrl>#raised</styleUrl>"
+                "<Polygon><outerBoundaryIs><LinearRing>"
                 f"<coordinates>{_ring(poly.exterior.coords)}</coordinates>"
                 "</LinearRing></outerBoundaryIs></Polygon></Placemark>"
             )

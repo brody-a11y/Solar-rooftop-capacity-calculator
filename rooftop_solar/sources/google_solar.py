@@ -303,6 +303,7 @@ class GoogleFilteredEstimator:
         low_yield_m2 = 0.0  # panels producing well below the building's best ones
         kept_kwh: list[float] = []
         kept_flat = []  # plan-view rectangles of kept panels on flat segments
+        dropped = []  # panels left out for shade, north faces or pitch: raised racking can't fix those
         # Reference = 90th-percentile panel, not the single best: a few unusually
         # sunny edge panels on a big flat roof would otherwise set the bar so high
         # that most of a usable roof is dropped.
@@ -318,6 +319,8 @@ class GoogleFilteredEstimator:
             if is_flat:
                 all_flat_m2 += across * down
             rect = _panel_rect(insights, p, seg, frame)
+            if not is_flat:
+                dropped.append(rect)
             if rect.intersection(zone).area < self.min_inside_fraction * rect.area:
                 continue
             if not is_flat and self._poleward(seg.azimuth_deg, frame.lat0):
@@ -326,6 +329,7 @@ class GoogleFilteredEstimator:
                     continue
             if min_kwh > 0 and p.yearly_kwh < min_kwh:
                 low_yield_m2 += across * down
+                dropped.append(rect)
                 continue
             kept.append(rect)
             kept_kwh.append(p.yearly_kwh)
@@ -345,7 +349,7 @@ class GoogleFilteredEstimator:
         # pathways and not clipped to our footprint (which may be the wrong building).
         unclipped_m2 = (all_surface_m2 - all_flat_m2) + all_flat_m2 * flat_density
         unclipped_kw = int(unclipped_m2 // design.module.area_m2) * design.module.watts_dc / 1000.0
-        raised_extra = self._raised_racking_modules(kept_flat, zone, flat_density, design)
+        raised_extra, raised_gaps = self._raised_racking_modules(kept_flat, dropped, zone, flat_density, design)
 
         flags = []
         if 0 < count < design.min_modules_per_structure:
@@ -385,10 +389,11 @@ class GoogleFilteredEstimator:
             },
             layout=[frame.to_lonlat(r) for r in kept],
             footprint=building.footprint,
+            raised_areas=[frame.to_lonlat(g) for g in raised_gaps],
         )
 
     @staticmethod
-    def _raised_racking_modules(flat_rects, zone, flat_density: float, design) -> int:
+    def _raised_racking_modules(flat_rects, dropped_rects, zone, flat_density: float, design) -> tuple[int, list]:
         """Extra modules if raised racking spans equipment gaps on flat roofs.
 
         A gap counts when it is (a) inside the code-compliant zone, (b) narrow
@@ -397,22 +402,24 @@ class GoogleFilteredEstimator:
         surrounded by panels: at least 60% of its edge borders the layout.
         That takes enclosed holes and equipment notches open to one side, and
         leaves out strips along the fire setback, courtyards and wells.
+        Spots where Google's panels were dropped (shaded, north-facing or
+        pitched) are not gaps: raising the racking doesn't make them usable.
         An estimate: Google doesn't report equipment heights.
         """
         if not flat_rects or design.raised_gap_m <= 0:
-            return 0
+            return 0, []
         g = design.raised_gap_m
         layout = unary_union(flat_rects).buffer(0.5, join_style="mitre").buffer(-0.5, join_style="mitre")
         # opening drops slivers under ~1.5 m wide: setback edges, ragged row ends
-        free = zone.difference(layout).buffer(-0.75, join_style="mitre").buffer(0.75, join_style="mitre")
+        blocked = unary_union([layout, *dropped_rects]) if dropped_rects else layout
+        free = zone.difference(blocked).buffer(-0.75, join_style="mitre").buffer(0.75, join_style="mitre")
         near_layout = layout.buffer(0.3, join_style="mitre")
-        extra_m2 = 0.0
-        for gap in polygons(free):
-            if gap.length == 0 or not gap.buffer(-g).is_empty:
-                continue
-            if gap.boundary.intersection(near_layout).length >= 0.6 * gap.length:
-                extra_m2 += gap.area
-        return int(extra_m2 * flat_density // design.module.area_m2)
+        gaps = [
+            gap for gap in polygons(free)
+            if gap.length > 0 and gap.buffer(-g).is_empty
+            and gap.boundary.intersection(near_layout).length >= 0.6 * gap.length
+        ]
+        return int(sum(gap.area for gap in gaps) * flat_density // design.module.area_m2), gaps
 
     def _poleward(self, azimuth_deg: float, lat: float) -> bool:
         pole = 0.0 if lat >= 0 else 180.0
