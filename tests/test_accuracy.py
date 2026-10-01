@@ -241,3 +241,16 @@ def test_raised_designs_compared_with_raised_column_only(tmp_path, footprints, m
     assert float(row["tool_err"].rstrip("%")) > -50  # standard compared with the 30 kW design, not 1000
     assert float(row["raised_err"].rstrip("%")) < -90  # raised compared with the 1000 kW raised design
     assert "1000@550WR" in row["designs_kw"]
+
+
+def test_summary_reports_installed_share_of_maxfit():
+    from rooftop_solar.accuracy import summary
+
+    def row(err):
+        r = {"site": "s", "kind": "floor", "manual_review": ""}
+        for label in ("tool", "raised", "footprint_only", "google", "google_unclipped"):
+            r[f"{label}_kw"], r[f"{label}_err"], r[f"{label}_within"] = 100.0, f"{err:+.0%}", False
+        return r
+
+    text = summary([row(1.0), row(0.25), row(3.0)])  # installed = 50%, 80%, 25% of MaxFit
+    assert "3 unflagged floor sites): median 50%" in text

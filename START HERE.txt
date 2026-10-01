@@ -82,3 +82,10 @@ After an update: replace this folder with the new version and double-click
 Install.command again.
 
 Full documentation: README.md
+
+Installed systems from public permit data (optional):
+   Double-click 'Pull Permits.command'. It downloads rooftop solar permits of
+   30 kW and up from city open data (SF, LA, Austin, Seattle, Chicago, NYC;
+   free) into Downloads/permits_truth.csv, at most 40 sites per city. Drag
+   that file into 'Accuracy Test.command'. Installed systems are minimums:
+   the test reports what share of the tool's MaxFit typically gets built.

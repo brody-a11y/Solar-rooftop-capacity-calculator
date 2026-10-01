@@ -124,4 +124,12 @@ def summary(rows: list[dict], tolerance: float = 0.10) -> str:
     lines.append(f"  below design, flagged for manual review: {', '.join(caught) or 'none'}")
     lines.append(f"  below design, NOT flagged (the misses that matter): {', '.join(missed) or 'none'}")
     lines.append(f"Flagged for manual review: {flagged} of {len(rows)} sites")
+    # Installed (or load-sized) systems against the tool's MaxFit: how much of the
+    # roof typically gets built. Unflagged sites only.
+    shares = sorted(1 / (1 + float(r["tool_err"].rstrip("%")) / 100) for r in sized
+                    if r["kind"] == "floor" and not r["manual_review"] and float(r["tool_err"].rstrip("%")) > -100)
+    if len(shares) >= 3:
+        q = lambda f: shares[min(len(shares) - 1, int(f * len(shares)))]
+        lines.append(f"\nInstalled/load-sized systems as a share of MaxFit ({len(shares)} unflagged floor sites): "
+                     f"median {q(0.5):.0%}, middle half {q(0.25):.0%}-{q(0.75):.0%}")
     return "\n".join(lines)

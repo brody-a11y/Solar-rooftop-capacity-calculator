@@ -236,6 +236,30 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_permits(args: argparse.Namespace) -> int:
+    import random
+
+    from .sources.permits import CITIES, pull_permits
+
+    rows = []
+    for city in args.city or list(CITIES):
+        try:
+            got = pull_permits(city, min_kw=args.min_kw, since_year=args.since, limit=args.limit)
+        except Exception as exc:  # one portal down must not stop the others
+            print(f"{city}: couldn't read permits ({type(exc).__name__}: {exc})", file=sys.stderr)
+            continue
+        if args.sample and len(got) > args.sample:
+            got = random.Random(0).sample(got, args.sample)
+        print(f"{city}: {len(got)} rooftop PV permits of {args.min_kw:g} kW or more")
+        rows.extend(got)
+    if not rows:
+        print("No permits found.", file=sys.stderr)
+        return 1
+    _write_csv(rows, args.out, "name")
+    print(f"Wrote {len(rows)} sites -> {args.out}")
+    return 0
+
+
 def _samples(results_path: str, truth_path: str, raw: bool) -> tuple[list[Sample], list[dict]]:
     truth = {r["building_id"]: float(r["true_kw"]) for r in _read_csv(truth_path) if r.get("true_kw")}
     rows = [r for r in _read_csv(results_path) if r["building_id"] in truth]
@@ -340,6 +364,16 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--energy-ratios", default="0,0.6,0.7,0.8,0.9",
                    help="comma-separated panel-yield cutoffs to compare (uses saved Google answers, no extra cost)")
     a.set_defaults(func=cmd_accuracy)
+
+    pm = sub.add_parser("permits", help="pull installed rooftop PV systems from city permit open data (accuracy-test minimums)")
+    pm.add_argument("--city", action="append", help="sf, la, austin, seattle, chicago, nyc (repeatable; default all)")
+    pm.add_argument("--min-kw", type=float, default=30.0, help="skip smaller (residential-scale) systems")
+    pm.add_argument("--since", type=int, default=2015, help="skip permits issued before this year")
+    pm.add_argument("--limit", type=int, default=5000, help="max permit records read per dataset")
+    pm.add_argument("--sample", type=int, default=40,
+                    help="keep at most this many sites per city (each site costs Google/Regrid lookups); 0 = all")
+    pm.add_argument("--out", required=True)
+    pm.set_defaults(func=cmd_permits)
 
     c = sub.add_parser("calibrate", help="fit correction factors against real designs")
     c.add_argument("--results", required=True, help="CSV from `size`")
