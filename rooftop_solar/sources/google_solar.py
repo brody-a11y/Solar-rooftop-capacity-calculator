@@ -338,6 +338,9 @@ class GoogleFilteredEstimator:
         unclipped_kw = int(unclipped_m2 // design.module.area_m2) * design.module.watts_dc / 1000.0
 
         flags = []
+        if 0 < count < design.min_modules_per_structure:
+            flags.append(f"under_{design.min_modules_per_structure}_modules_not_designed")
+            count, kept = 0, []
         if insights.imagery_quality not in ("HIGH", "MEDIUM"):
             flags.append(f"imagery_quality_{insights.imagery_quality.lower()}")
         if insights.panels and len(kept) == 0:

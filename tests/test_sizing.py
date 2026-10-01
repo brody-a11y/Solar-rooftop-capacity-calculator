@@ -99,3 +99,14 @@ def test_winter_profile_angle_reasonable():
     assert 26 < ang < 34
     pitch = south_row_pitch_m(1.134, 10.0, 34.05)
     assert 1.134 * math.cos(math.radians(10)) < pitch < 1.6
+
+
+def test_structures_under_seven_modules_are_not_designed():
+    # ~6 m x 9 m roof: room for a handful of modules only
+    small = Building("shed", lonlat_box(0, 0, 9, 6), Occupancy.COMMERCIAL)
+    r = GeometricEstimator(design=DesignConfig(flat_racking=Racking.FLUSH, edge_setback_ft=0.0)).estimate(small)
+    assert r.module_count == 0 and r.dc_kw == 0
+    assert any(f.startswith("under_7_modules") for f in r.flags)
+    # the same rule switched off keeps them
+    r2 = GeometricEstimator(design=DesignConfig(flat_racking=Racking.FLUSH, min_modules_per_structure=0)).estimate(small)
+    assert 0 < r2.module_count < 7
