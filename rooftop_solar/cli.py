@@ -53,6 +53,7 @@ def _setup(args: argparse.Namespace):
         east_west_gcr=args.gcr,
         south_gcr=args.gcr if args.flat_racking == Racking.SOUTH.value and args.south_gcr_fixed else None,
         edge_setback_ft=args.edge_setback_ft,
+        exclude_poleward_faces=not args.include_north_faces,
     )
     geometric = GeometricEstimator(rules, design)
     calibrator = Calibrator.load(args.calibration) if args.calibration else None
@@ -237,6 +238,8 @@ def build_parser() -> argparse.ArgumentParser:
     design.add_argument("--google-max-points", type=int, default=9,
                         help="max Google lookups per building; large buildings are split by Google into pieces")
     design.add_argument("--workers", type=int, default=8)
+    design.add_argument("--include-north-faces", action="store_true",
+                        help="keep Google panels on north-facing pitched roof faces (excluded by default)")
     design.add_argument("--no-parcels", action="store_true", help="don't use Regrid parcel boundaries")
     design.add_argument("--regrid-token-file", default="~/.rooftop-solar/regrid_token",
                         help="file holding a Regrid API token (or set REGRID_TOKEN)")

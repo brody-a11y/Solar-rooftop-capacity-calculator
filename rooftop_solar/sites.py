@@ -141,6 +141,8 @@ class SiteOutcome:
             "dc_kw": round(self.dc_kw, 2),
             "raw_kw": round(sum(e.raw_kw for e in self.estimates), 2),
             "module_count": sum(e.primary.module_count for e in self.estimates if e.primary),
+            "north_faces_kw_not_counted": round(sum(e.google.details.get("poleward_face_kw", 0) for e in self.estimates
+                                                    if e.google and e.google.details.get("poleward_faces_excluded")), 1),
             "roof_area_m2": round(sum(e.primary.gross_roof_area_m2 for e in self.estimates if e.primary), 1),
             "needs_review": bool(reasons),
             "reasons": ";".join(reasons),

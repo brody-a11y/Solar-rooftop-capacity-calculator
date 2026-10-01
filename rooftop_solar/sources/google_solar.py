@@ -297,6 +297,7 @@ class GoogleFilteredEstimator:
 
         kept, kept_surface_m2, flat_surface_m2 = [], 0.0, 0.0
         all_surface_m2 = all_flat_m2 = 0.0  # every Google panel, ignoring the code zone
+        poleward_m2 = 0.0  # pitched panels facing away from the sun (north in the US)
         kinds = set()
         for p in insights.panels:
             seg = _segment(insights, p)
@@ -308,6 +309,10 @@ class GoogleFilteredEstimator:
             rect = _panel_rect(insights, p, seg, frame)
             if rect.intersection(zone).area < self.min_inside_fraction * rect.area:
                 continue
+            if not is_flat and self._poleward(seg.azimuth_deg, frame.lat0):
+                poleward_m2 += across * down
+                if design.exclude_poleward_faces:
+                    continue
             kept.append(rect)
             area = across * down
             kept_surface_m2 += area
@@ -347,6 +352,8 @@ class GoogleFilteredEstimator:
                 "google_panels_kept": len(kept),
                 "google_max_array_panels": insights.max_array_panels,
                 "google_buildings_merged": insights.buildings_merged,
+                "poleward_face_kw": round(int(poleward_m2 // design.module.area_m2) * design.module.watts_dc / 1000.0, 1),
+                "poleward_faces_excluded": design.exclude_poleward_faces,
                 "imagery_quality": insights.imagery_quality,
                 "imagery_date": insights.imagery_date,
                 "flat_density_factor": round(flat_density, 3),
@@ -354,6 +361,11 @@ class GoogleFilteredEstimator:
             layout=[frame.to_lonlat(r) for r in kept],
             footprint=building.footprint,
         )
+
+    def _poleward(self, azimuth_deg: float, lat: float) -> bool:
+        pole = 0.0 if lat >= 0 else 180.0
+        diff = abs((azimuth_deg - pole + 180.0) % 360.0 - 180.0)
+        return diff < self.geometric.design.poleward_cone_deg
 
     def _flat_density(self, lat: float) -> float:
         """Module area per unit roof area for the configured flat racking (its GCR)."""

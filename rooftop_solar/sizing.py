@@ -34,6 +34,10 @@ class DesignConfig:
     parapet_setback_ratio: float = 0.0  # extra setback = ratio * parapet height
     obstruction_shade_ratio: float = 0.0  # extend obstruction keep-out poleward by ratio * height
     phase_steps: int = 8
+    # Pitched roof faces within this many degrees of due north (south in the
+    # southern hemisphere) are left out of Google layouts; designers rarely use them.
+    exclude_poleward_faces: bool = True
+    poleward_cone_deg: float = 45.0
 
 
 def _module_dims(module: Module, orientation: str) -> tuple[float, float]:

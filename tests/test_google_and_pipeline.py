@@ -152,3 +152,17 @@ def test_google_client_caches_not_found(tmp_path, monkeypatch):
             client.building_insights(34.0, -118.0)
         assert exc.value.response.status_code == 404
     assert len(calls) == 1
+
+
+def test_north_facing_pitched_panels_left_out_by_default():
+    b = Building("a", centered_box_ft(200, 100), Occupancy.R2)
+    north = GoogleInsights.from_response(google_response(pitch=25.0))
+    north.segments[0].azimuth_deg = 0.0  # every panel on a north-facing slope
+    south = GoogleInsights.from_response(google_response(pitch=25.0))
+    geo = GeometricEstimator()
+    r_n = GoogleFilteredEstimator(geo).estimate(b, north)
+    r_s = GoogleFilteredEstimator(geo).estimate(b, south)
+    assert r_n.module_count == 0 and r_n.details["poleward_face_kw"] > 0
+    assert r_s.module_count > 0 and r_s.details["poleward_face_kw"] == 0
+    keep = GoogleFilteredEstimator(GeometricEstimator(design=DesignConfig(exclude_poleward_faces=False))).estimate(b, north)
+    assert keep.module_count > 0
