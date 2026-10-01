@@ -32,7 +32,8 @@ Sizing a list of properties (no drawing needed)
                                    Google Earth to check the right roof was used
    Two MaxFit numbers per property: dc_kw (standard racking, panels go
    around rooftop equipment) and maxfit_raised_racking_kw (raised racking
-   also spans small equipment gaps on flat roofs; an estimate). rooftop_kw
+   also spans equipment gaps up to ~20 ft wide on flat roofs, including
+   equipment against a roof edge; an estimate). rooftop_kw
    and carport_kw split dc_kw.
    Check the "reasons" column: it says why a row needs review, e.g. the
    address matched a building 30 m away, or two buildings were equally close.

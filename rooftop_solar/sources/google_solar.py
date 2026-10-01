@@ -391,22 +391,27 @@ class GoogleFilteredEstimator:
     def _raised_racking_modules(flat_rects, zone, flat_density: float, design) -> int:
         """Extra modules if raised racking spans equipment gaps on flat roofs.
 
-        Only fully enclosed holes in Google's flat-roof layout count: gaps
-        surrounded by panels on all sides and narrow enough to span (no wider
-        than 2 x raised_gap_m). Normal panel spacing (under ~1 m) is not a gap.
-        Equipment at roof edges, courtyards and mechanical wells stay empty, so
-        this errs low. An estimate: Google doesn't report equipment heights.
+        A gap counts when it is (a) inside the code-compliant zone, (b) narrow
+        enough to span (no wider than 2 x raised_gap_m), (c) at least ~1.5 m
+        wide, so the ragged ends of panel rows don't count, and (d) mostly
+        surrounded by panels: at least 60% of its edge borders the layout.
+        That takes enclosed holes and equipment notches open to one side, and
+        leaves out strips along the fire setback, courtyards and wells.
+        An estimate: Google doesn't report equipment heights.
         """
         if not flat_rects or design.raised_gap_m <= 0:
             return 0
         g = design.raised_gap_m
         layout = unary_union(flat_rects).buffer(0.5, join_style="mitre").buffer(-0.5, join_style="mitre")
+        # opening drops slivers under ~1.5 m wide: setback edges, ragged row ends
+        free = zone.difference(layout).buffer(-0.75, join_style="mitre").buffer(0.75, join_style="mitre")
+        near_layout = layout.buffer(0.3, join_style="mitre")
         extra_m2 = 0.0
-        for part in polygons(layout):
-            for ring in part.interiors:
-                hole = Polygon(ring)
-                if hole.buffer(-g).is_empty:  # narrow enough to span
-                    extra_m2 += hole.intersection(zone).area
+        for gap in polygons(free):
+            if gap.length == 0 or not gap.buffer(-g).is_empty:
+                continue
+            if gap.boundary.intersection(near_layout).length >= 0.6 * gap.length:
+                extra_m2 += gap.area
         return int(extra_m2 * flat_density // design.module.area_m2)
 
     def _poleward(self, azimuth_deg: float, lat: float) -> bool:

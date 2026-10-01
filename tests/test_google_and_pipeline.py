@@ -218,3 +218,23 @@ def test_raised_racking_fills_small_equipment_gaps_not_large_openings():
     lost_small = with_hole(0.0).module_count - small.module_count
     assert small.details["raised_racking_extra_modules"] >= 0.6 * lost_small
     assert large.details["raised_racking_extra_modules"] < 0.2 * (with_hole(0.0).module_count - large.module_count)
+
+
+def test_raised_racking_fills_equipment_notch_open_to_one_side():
+    b = Building("a", centered_box_ft(200, 100), Occupancy.COMMERCIAL)
+    flush = DesignConfig(flat_racking=Racking.FLUSH, min_panel_energy_ratio=0.0)
+
+    def with_notch(width_m):
+        resp = google_response()
+        resp["solarPotential"]["solarPanels"] = [
+            p for p in resp["solarPotential"]["solarPanels"]
+            if not (abs(FRAME.point_to_local(p["center"]["longitude"], p["center"]["latitude"])[0] + 15) < width_m / 2
+                    and FRAME.point_to_local(p["center"]["longitude"], p["center"]["latitude"])[1] > D_M / 2 - 6)
+        ]
+        return GoogleFilteredEstimator(GeometricEstimator(design=flush)).estimate(b, GoogleInsights.from_response(resp))
+
+    full = with_notch(0.0)
+    notch = with_notch(5.0)  # equipment cluster against the north parapet
+    assert full.details["raised_racking_extra_modules"] == 0  # full roof: no gaps, no edge strips
+    lost = full.module_count - notch.module_count
+    assert 0.6 * lost <= notch.details["raised_racking_extra_modules"] <= 1.1 * lost

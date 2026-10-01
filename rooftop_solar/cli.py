@@ -186,15 +186,16 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
         )
         return outcomes, compare(truth, outcomes, geo.design.module.watts_dc)
 
-    ratios = [float(x) for x in args.energy_ratios.split(",")] if args.energy_ratios else [args.min_panel_energy_ratio]
+    ratios = [float(x) for x in args.energy_ratios.split(",")] if args.energy_ratios else []
+    ratios = sorted(set(ratios) | {args.min_panel_energy_ratio})
     sweep = []
     for ratio in ratios:
         outcomes, rows = run(ratio)
         errs = [float(r["google_err"].rstrip("%")) / 100 for r in rows if r["google_err"]]
         sweep.append((ratio, outcomes, rows, errs))
-    # report the setting with the most sites within +/-10% (ties: smallest median error)
-    best = max(sweep, key=lambda t: (sum(abs(e) <= 0.10 for e in t[3]), -statistics.median([abs(e) for e in t[3]] or [9])))
-    ratio, outcomes, rows, _ = best
+    # Report the configured cutoff, not the best fit: reference designs are
+    # cost-trimmed, so fitting them would bias absolute MaxFit low.
+    ratio, outcomes, rows, _ = next(t for t in sweep if t[0] == args.min_panel_energy_ratio)
     _write_csv(rows, args.out, "site")
     if args.layouts:
         write_layouts([e.primary for o in outcomes for e in o._counted() if e.primary], args.layouts)
@@ -212,7 +213,7 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
             hits = sum(abs(e) <= 0.10 for e in errs)
             med_abs = statistics.median([abs(e) for e in errs]) if errs else float("nan")
             med = statistics.median(errs) if errs else float("nan")
-            mark = "  <- shown above" if r == ratio else ""
+            mark = "  <- shown above (default; set with --min-panel-energy-ratio)" if r == ratio else ""
             print(f"{r:7.2f} {hits:>5} of {len(errs):<3} {med_abs:>12.0%} {med:>+11.0%}{mark}")
     print(f"\nFull report: {args.out}")
     return 0
