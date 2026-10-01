@@ -273,3 +273,48 @@ def test_outline_only_main_building_counted_scaled_and_flagged(footprints):
     wh = next(e for b, e in zip(out.buildings, out.estimates) if b.id.endswith("warehouse") or e.method == "geometric")
     assert wh.dc_kw == pytest.approx(0.55 * wh.raw_kw)
     assert "most_roof_area_sized_from_outlines" in out.manual_review
+
+
+def test_same_owner_matches_entity_variants_and_mailing_address():
+    from rooftop_solar.sources.regrid import Parcel, same_owner
+
+    p = lambda owner, mail="": Parcel(box(0, 0, 1, 1), "1", "", owner, None, mail)
+    assert same_owner(p("UDR Union Place, L.L.C."), p("UDR UNION PLACE LLC"))
+    assert same_owner(p("Union Place Phase II LLC", "1745 Shea Center Dr 80129"), p("UDR Inc", "1745 SHEA CENTER DR 80129"))
+    assert not same_owner(p("UDR Union Place LLC"), p("Franklin Self Storage LP"))
+    assert not same_owner(p(""), p(""))
+
+
+def test_unit_addresses_pull_in_same_owner_parcels_only(footprints):
+    """Main parcel holds apt-a; unit points lead to apt-b (same owner) and 'unknown' (another owner)."""
+
+    def parcel(poly, owner):
+        f = _v2_response(poly)["parcels"]["features"][0]
+        f["properties"]["fields"]["owner"] = owner
+        return regrid_mod._parcel(f)
+
+    class Parcels:
+        calls = 0
+
+        def parcel_at(self, lat, lon):
+            self.calls += 1
+            x, y = FRAME.point_to_local(lon, lat)
+            if x > 300:
+                return parcel(box(390, -10, 440, 30), "Corner Store LLC")
+            if y > 25:
+                return parcel(box(190, 25, 250, 55), "OAK APARTMENTS, L.L.C.")
+            return parcel(box(190, -10, 250, 22), "Oak Apartments LLC")
+
+    class Units:
+        def unit_points(self, address):
+            pts = [(220, 7), (215, 37), (225, 37), (415, 10)]  # two units in apt-b: one parcel lookup
+            return [FRAME.point_to_lonlat(x, y)[::-1] for x, y in pts]
+
+    lon, lat = ll(220, 7)
+    parcels = Parcels()
+    out = size_sites([Site("Oak", address="1 Oak St, Los Angeles, CA 90012", lat=lat, lon=lon)], footprints,
+                     GeometricEstimator(), workers=1, progress=lambda *_: None, parcels=parcels, unit_addresses=Units())[0]
+    assert sorted(m.overture_id for m in out.matches) == ["apt-a", "apt-b"]
+    assert "added_1_buildings_from_1_more_parcels_same_owner" in out.reasons
+    assert "skipped_1_parcels_other_owner_under_unit_addresses" in out.reasons
+    assert parcels.calls == 3  # site parcel + apt-b + store, not one per unit

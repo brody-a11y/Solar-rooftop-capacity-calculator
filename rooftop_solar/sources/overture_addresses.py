@@ -192,8 +192,9 @@ class OvertureAddresses:
 
     def unit_points(self, address: str) -> list[tuple[float, float]]:
         """(lat, lon) of every address point sharing this house number and street
-        (apartment units, building letters). Several distinct points usually mean
-        a multi-building property."""
+        (apartment units, building letters), or every number of a range such as
+        "521-537 Edgewood Ave". Several distinct points usually mean a
+        multi-building property."""
         parsed = parse_address(address)
         if not parsed:
             return []
@@ -201,7 +202,14 @@ class OvertureAddresses:
         table = self._zip_table(zipcode)
         if table.num_rows == 0:
             return []
-        rows = table.filter(pc.equal(pc.utf8_upper(table["number"]), number)).to_pylist()
+        rng = re.match(r"\s*(\d+)\s*-\s*(\d+)\s", address)
+        if rng and int(rng.group(1)) < int(rng.group(2)) <= int(rng.group(1)) + 400:
+            # "521-537 Edgewood Ave": every house number in the range
+            lo, hi = int(rng.group(1)), int(rng.group(2))
+            wanted = {str(n) for n in range(lo, hi + 1)}
+            rows = [r for r in table.to_pylist() if str(r["number"] or "").upper() in wanted]
+        else:
+            rows = table.filter(pc.equal(pc.utf8_upper(table["number"]), number)).to_pylist()
         query = street_tokens(street)
         scored = [(_score(query, street_tokens(r["street"] or "")), r) for r in rows]
         top = max((sc for sc, _ in scored), default=0.0)

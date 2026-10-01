@@ -49,3 +49,11 @@ def _isolate_from_real_credentials(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("REGRID_TOKEN", raising=False)
     monkeypatch.delenv("GOOGLE_SOLAR_API_KEY", raising=False)
+    # Equipment detection is on by default with --google: tests that fake Google
+    # must not reach the real dataLayers endpoint either.
+    from rooftop_solar.sources import google_dsm
+
+    def _no_network(self, footprint):
+        raise RuntimeError("network disabled in tests")
+
+    monkeypatch.setattr(google_dsm.GoogleDSMClient, "_download", _no_network)

@@ -1,0 +1,101 @@
+import io
+import json
+
+import numpy as np
+import pytest
+from shapely.geometry import box
+
+from rooftop_solar import Building, DesignConfig, GeometricEstimator, Occupancy, Racking
+from rooftop_solar.models import Obstruction
+from rooftop_solar.sources.google_dsm import GoogleDSMClient, detect_equipment, mask_to_polygon, read_geotiff
+from rooftop_solar.sources.google_solar import GoogleFilteredEstimator, GoogleInsights
+
+from .helpers import FRAME, centered_box_ft
+from .test_google_and_pipeline import D_M, W_M, google_response
+
+
+def _roof(n=200, pixel=0.25, seed=0):
+    """50 x 50 m flat roof at 20 m with 2 cm noise, three 1 m condensers and a 12 m penthouse."""
+    rng = np.random.default_rng(seed)
+    dsm = 20.0 + rng.normal(0, 0.02, (n, n))
+    for r, c in [(40, 40), (40, 52), (120, 60)]:
+        dsm[r:r + 4, c:c + 4] += 1.0
+    dsm[100:148, 120:168] += 3.0  # penthouse: a roof level, not equipment
+    return dsm
+
+
+def test_detects_condensers_not_penthouse_or_noise():
+    dsm = _roof()
+    found = detect_equipment(dsm, np.ones_like(dsm, bool), 0.25)
+    assert len(found) == 3
+    assert all(m.sum() == 16 for m in found)
+
+
+def test_roof_edge_is_not_equipment():
+    dsm = np.full((120, 120), 0.0)
+    dsm[20:100, 20:100] = 15.0  # building standing on the ground
+    mask = np.zeros_like(dsm, bool)
+    mask[20:100, 20:100] = True
+    assert detect_equipment(dsm, mask, 0.25) == []
+
+
+def test_mask_to_polygon_area():
+    m = np.zeros((10, 10), bool)
+    m[2:4, 3:7] = True
+    g = mask_to_polygon(m, lambda c, r: (c * 0.25, -r * 0.25))
+    assert g.area == pytest.approx(8 * 0.0625)
+
+
+def _geotiff(dsm, x0, y0, pixel, epsg):
+    import tifffile
+
+    buf = io.BytesIO()
+    keys = (1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, epsg)
+    tifffile.imwrite(buf, dsm.astype("float32"), compression="zlib", extratags=[
+        (33550, "d", 3, (pixel, pixel, 0.0)),
+        (33922, "d", 6, (0.0, 0.0, 0.0, x0, y0, 0.0)),
+        (34735, "H", len(keys), keys),
+    ])
+    return buf.getvalue()
+
+
+def test_read_geotiff_transform():
+    arr, to_crs, epsg = read_geotiff(_geotiff(np.zeros((4, 6)), 500000.0, 3760000.0, 0.25, 32611))
+    assert arr.shape == (4, 6) and epsg == 32611
+    assert to_crs(2, 3) == (500000.5, 3760000.0 - 0.75)
+
+
+def test_client_finds_equipment_in_lonlat_and_caches(tmp_path, monkeypatch):
+    from pyproj import Transformer
+
+    fp = FRAME.to_lonlat(box(-25, -25, 25, 25))
+    c = fp.centroid
+    to_utm = Transformer.from_crs(4326, 32611, always_xy=True)
+    cx, cy = to_utm.transform(c.x, c.y)
+    tif = _geotiff(_roof(), cx - 25, cy + 25, 0.25, 32611)
+    calls = []
+    monkeypatch.setattr(GoogleDSMClient, "_download", lambda self, footprint: calls.append(1) or tif)
+    client = GoogleDSMClient("k", cache_dir=tmp_path)
+    eq = client.equipment(fp)
+    assert len(eq) == 3 and calls == [1]
+    first = FRAME.to_local(eq[0])
+    assert first.area == pytest.approx(1.0, abs=0.05)
+    assert fp.contains(eq[0])
+    assert len(client.equipment(fp)) == 3 and calls == [1]  # cached
+
+
+def test_panels_kept_clear_of_condenser_field_and_raised_spans_it():
+    b = Building("a", centered_box_ft(200, 100), Occupancy.R2)
+    # a 4 x 4 m condenser field in the middle of the west half
+    field = FRAME.to_lonlat(box(-17, -2, -13, 2))
+    with_eq = Building("a", b.footprint, Occupancy.R2, obstructions=[Obstruction(field, "equipment")])
+    design = DesignConfig(flat_racking=Racking.FLUSH, min_panel_energy_ratio=0.0)
+    est = GoogleFilteredEstimator(GeometricEstimator(design=design))
+    ins = GoogleInsights.from_response(google_response())
+    clear, blocked = est.estimate(b, ins), est.estimate(with_eq, ins)
+    lost = clear.module_count - blocked.module_count
+    # field plus 3 ft each side (5.8 m square), and every Google panel touching it:
+    # about (5.8 + 1.9) x (5.8 + 1.0) = 53 m2 -> ~20 modules of 2.58 m2
+    assert 12 <= lost <= 28
+    assert blocked.details["equipment_detected"] == 1 and blocked.details["equipment_clearance_kw"] > 0
+    assert blocked.details["raised_racking_extra_modules"] >= 0.6 * lost

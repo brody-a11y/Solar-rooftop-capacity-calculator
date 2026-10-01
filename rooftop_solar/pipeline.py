@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .calibration import Calibrator, segment_key
-from .models import Building, SizingResult
+from .models import Building, Obstruction, SizingResult
 from .sizing import GeometricEstimator
 from .sources.google_solar import GoogleFilteredEstimator, GoogleInsights, GoogleLookupError, GoogleSolarClient, fetch_building
 
@@ -132,6 +132,7 @@ def estimate_many(
     policy: ReviewPolicy = ReviewPolicy(),
     workers: int = 8,
     google_max_points: int = 9,
+    equipment_client=None,
 ) -> list[SiteEstimate]:
     """Google lookups on threads (network-bound), sizing on processes (CPU-bound;
     threads contend on the GIL and run slower than one worker)."""
@@ -147,9 +148,34 @@ def estimate_many(
                 errors[i] = type(exc).__name__
         with ThreadPoolExecutor(max_workers=workers) as pool:
             list(pool.map(fetch, range(len(buildings))))
+    notes: list[list[str]] = [[] for _ in buildings]
+    if equipment_client:
+        # Rooftop equipment from Google's surface model, only where Google put
+        # panels on a flat roof (condenser fields are a flat-roof problem).
+        flat_deg = geometric.design.flat_pitch_threshold_deg
+        buildings = list(buildings)
+
+        def equip(i):
+            ins = insights[i]
+            if ins is None or not any(s.pitch_deg < flat_deg for s in ins.segments) or not ins.panels:
+                return
+            try:
+                found = equipment_client.equipment(buildings[i].footprint)
+            except Exception as exc:  # sizing goes ahead without it, flagged
+                code = getattr(getattr(exc, "response", None), "status_code", None)
+                notes[i].append(f"equipment_lookup_failed:{f'http_{code}' if code else type(exc).__name__}")
+                return
+            buildings[i] = replace(buildings[i], obstructions=buildings[i].obstructions
+                                   + [Obstruction(g, "equipment") for g in found])
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(equip, range(len(buildings))))
     jobs = [(b, geometric, insights[i], errors[i], calibrator, policy) for i, b in enumerate(buildings)]
     procs = min(workers, os.cpu_count() or 1, len(jobs))
     if procs <= 1:
-        return [_size_one(j) for j in jobs]
-    with ProcessPoolExecutor(max_workers=procs) as pool:
-        return list(pool.map(_size_one, jobs, chunksize=max(1, len(jobs) // (procs * 4))))
+        results = [_size_one(j) for j in jobs]
+    else:
+        with ProcessPoolExecutor(max_workers=procs) as pool:
+            results = list(pool.map(_size_one, jobs, chunksize=max(1, len(jobs) // (procs * 4))))
+    for est, extra in zip(results, notes):
+        est.reasons.extend(extra)
+    return results

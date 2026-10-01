@@ -62,3 +62,9 @@ def test_geocoder_overture_provider(addresses, tmp_path):
     g = Geocoder("overture", cache_path=tmp_path / "g.json", addresses=addresses)
     r = g.geocode("100 Main St, Town, CA 90001")
     assert (r.source, r.precision, r.lat) == ("overture", "address_point", 34.0)
+
+
+def test_unit_points_expand_address_ranges(addresses):
+    pts = addresses.unit_points("100-141 Main St, Town, CA 90001")
+    assert len(pts) == 3  # 100, 140 and 141 Main St; not Oak Ave or the other zip
+    assert len(addresses.unit_points("100 Main St, Town, CA 90001")) == 1

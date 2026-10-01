@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import requests
@@ -295,7 +295,13 @@ class GoogleFilteredEstimator:
         frame = LocalFrame.for_geometry(building.footprint)
         fp = frame.to_local(building.footprint)
         zone = self.geometric.usable_zone(building, frame)
+        equipment = [o for o in building.obstructions if o.kind == "equipment"]
+        # Raised racking spans detected equipment, so its zone ignores them.
+        raised_zone = (self.geometric.usable_zone(replace(building, obstructions=[o for o in building.obstructions
+                                                                                   if o.kind != "equipment"]), frame)
+                       if equipment else zone)
         flat_threshold = design.flat_pitch_threshold_deg
+        equipment_m2 = 0.0  # flat panels Google placed in equipment keep-out areas
 
         kept, kept_surface_m2, flat_surface_m2 = [], 0.0, 0.0
         all_surface_m2 = all_flat_m2 = 0.0  # every Google panel, ignoring the code zone
@@ -322,6 +328,8 @@ class GoogleFilteredEstimator:
             if not is_flat:
                 dropped.append(rect)
             if rect.intersection(zone).area < self.min_inside_fraction * rect.area:
+                if equipment and is_flat and rect.intersection(raised_zone).area >= self.min_inside_fraction * rect.area:
+                    equipment_m2 += across * down
                 continue
             if not is_flat and self._poleward(seg.azimuth_deg, frame.lat0):
                 poleward_m2 += across * down
@@ -349,7 +357,13 @@ class GoogleFilteredEstimator:
         # pathways and not clipped to our footprint (which may be the wrong building).
         unclipped_m2 = (all_surface_m2 - all_flat_m2) + all_flat_m2 * flat_density
         unclipped_kw = int(unclipped_m2 // design.module.area_m2) * design.module.watts_dc / 1000.0
-        raised_extra, raised_gaps = self._raised_racking_modules(kept_flat, dropped, zone, flat_density, design)
+        # Detected equipment plus its clearance and one panel's reach: what raised
+        # racking can cover over a condenser field, however wide the field is.
+        reach = self.geometric.rules.clearance_m("equipment") + design.module.length_m
+        over_equipment = (unary_union([frame.to_local(o.geometry) for o in equipment]).buffer(reach, join_style="mitre")
+                          if equipment else None)
+        raised_extra, raised_gaps = self._raised_racking_modules(kept_flat, dropped, raised_zone, flat_density, design,
+                                                                 over_equipment)
 
         flags = []
         if 0 < count < design.min_modules_per_structure:
@@ -382,6 +396,8 @@ class GoogleFilteredEstimator:
                 "poleward_faces_excluded": design.exclude_poleward_faces,
                 "best_panel_kwh": max(kept_kwh, default=0.0),
                 "median_panel_kwh": sorted(kept_kwh)[len(kept_kwh) // 2] if kept_kwh else 0.0,
+                "equipment_detected": len(equipment),
+                "equipment_clearance_kw": round(int(equipment_m2 * flat_density // design.module.area_m2) * design.module.watts_dc / 1000.0, 1),
                 "low_yield_kw": round(int(low_yield_m2 // design.module.area_m2) * design.module.watts_dc / 1000.0, 1),
                 "imagery_quality": insights.imagery_quality,
                 "imagery_date": insights.imagery_date,
@@ -393,7 +409,8 @@ class GoogleFilteredEstimator:
         )
 
     @staticmethod
-    def _raised_racking_modules(flat_rects, dropped_rects, zone, flat_density: float, design) -> tuple[int, list]:
+    def _raised_racking_modules(flat_rects, dropped_rects, zone, flat_density: float, design,
+                                over_equipment=None) -> tuple[int, list]:
         """Extra modules if raised racking spans equipment gaps on flat roofs.
 
         A gap counts when it is (a) inside the code-compliant zone, (b) narrow
@@ -404,7 +421,9 @@ class GoogleFilteredEstimator:
         leaves out strips along the fire setback, courtyards and wells.
         Spots where Google's panels were dropped (shaded, north-facing or
         pitched) are not gaps: raising the racking doesn't make them usable.
-        An estimate: Google doesn't report equipment heights.
+        Where equipment was detected (`over_equipment`: the equipment, its
+        clearance and a panel's reach), any gap there counts, whatever its width.
+        An estimate: equipment heights and structural spans aren't checked.
         """
         if not flat_rects or design.raised_gap_m <= 0:
             return 0, []
@@ -414,11 +433,14 @@ class GoogleFilteredEstimator:
         blocked = unary_union([layout, *dropped_rects]) if dropped_rects else layout
         free = zone.difference(blocked).buffer(-0.75, join_style="mitre").buffer(0.75, join_style="mitre")
         near_layout = layout.buffer(0.3, join_style="mitre")
-        gaps = [
-            gap for gap in polygons(free)
-            if gap.length > 0 and gap.buffer(-g).is_empty
-            and gap.boundary.intersection(near_layout).length >= 0.6 * gap.length
-        ]
+        gaps = []
+        for gap in polygons(free):
+            if gap.length == 0:
+                continue
+            if gap.buffer(-g).is_empty and gap.boundary.intersection(near_layout).length >= 0.6 * gap.length:
+                gaps.append(gap)
+            elif over_equipment is not None:
+                gaps.extend(p for p in polygons(gap.intersection(over_equipment)) if p.area > 1.0)
         return int(sum(gap.area for gap in gaps) * flat_density // design.module.area_m2), gaps
 
     def _poleward(self, azimuth_deg: float, lat: float) -> bool:

@@ -68,6 +68,15 @@ def _setup(args: argparse.Namespace):
     return geometric, calibrator, client
 
 
+def _equipment(args: argparse.Namespace):
+    """Rooftop-equipment detector (Google surface model), on by default with --google."""
+    if not args.google or args.no_equipment_detection:
+        return None
+    from .sources.google_dsm import GoogleDSMClient
+
+    return GoogleDSMClient(os.environ[args.google_key_env])
+
+
 def _write_csv(rows: list[dict], path: str, empty_header: str) -> None:
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else [empty_header])
@@ -145,6 +154,7 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
         search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
         google_max_points=args.google_max_points, unit_addresses=_unit_addresses(args, sites),
         parcels=_parcels(args), include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio,
+        equipment_client=_equipment(args),
     )
     site_rows = [o.row() for o in outcomes]
     _write_csv(site_rows, args.out, "site_id")
@@ -177,6 +187,7 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
         key = os.environ.get(args.google_key_env) if args.geocoder == "google" else None
         geocoder = Geocoder("google", key) if key else Geocoder("auto")
     footprints, parcels, units = OvertureFootprints(workers=args.workers), _parcels(args), _unit_addresses(args, sites)
+    equipment = _equipment(args)
 
     def run(ratio: float):
         geo = GeometricEstimator(geometric.rules, dataclasses.replace(geometric.design, min_panel_energy_ratio=ratio))
@@ -185,6 +196,7 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
             search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
             google_max_points=args.google_max_points, unit_addresses=units, parcels=parcels,
             include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio, progress=lambda *_: None,
+            equipment_client=equipment,
         )
         return outcomes, compare(truth, outcomes, geo.design.module.watts_dc)
 
@@ -271,6 +283,8 @@ def build_parser() -> argparse.ArgumentParser:
     design.add_argument("--google-cache", default=".cache/google_solar")
     design.add_argument("--google-max-points", type=int, default=9,
                         help="max Google lookups per building; large buildings are split by Google into pieces")
+    design.add_argument("--no-equipment-detection", action="store_true",
+                        help="don't look up rooftop equipment in Google's surface model (one billed dataLayers call per flat roof)")
     design.add_argument("--workers", type=int, default=8)
     design.add_argument("--include-north-faces", action="store_true",
                         help="keep Google panels on north-facing pitched roof faces (excluded by default)")

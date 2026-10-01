@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,26 @@ class Parcel:
     address: str
     owner: str
     acres: float | None
+    mail_address: str = ""  # owner's mailing address, for matching owners across parcels
+
+
+_ENTITY_WORDS = {"LLC", "LP", "LLP", "INC", "CO", "CORP", "CORPORATION", "LTD", "THE", "OF", "A", "AN", "AND"}
+
+
+def _norm_owner(owner: str) -> str:
+    words = re.sub(r"[^A-Z0-9 ]", " ", owner.upper().replace(".", "")).split()
+    return " ".join(w for w in words if w not in _ENTITY_WORDS)
+
+
+def same_owner(a: Parcel, b: Parcel) -> bool:
+    """Same owning entity: owner names equal after dropping LLC/LP/INC and
+    punctuation, or the same owner mailing address (portfolio owners often hold
+    each building in its own LLC but get their mail at one office)."""
+    na, nb = _norm_owner(a.owner), _norm_owner(b.owner)
+    if na and na == nb:
+        return True
+    ma, mb = _norm_owner(a.mail_address), _norm_owner(b.mail_address)
+    return bool(ma) and ma == mb
 
 
 def _features(data: dict) -> list[dict]:
@@ -58,6 +79,7 @@ def _parcel(feature: dict) -> Parcel | None:
         address=str(fields.get("address") or props.get("headline") or ""),
         owner=str(fields.get("owner") or ""),
         acres=float(acres) if acres not in (None, "") else None,
+        mail_address=" ".join(str(fields.get(k) or "") for k in ("mailadd", "mail_zip")).strip(),
     )
 
 

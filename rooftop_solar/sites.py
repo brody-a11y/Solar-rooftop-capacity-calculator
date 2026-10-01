@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
 
+from shapely.geometry import Point
+
 from .calibration import Calibrator
 from .geometry import LocalFrame, principal_axes
 from .models import Building, Occupancy
@@ -21,6 +23,7 @@ from .sizing import GeometricEstimator
 from .sources.geocode import Geocoder, GeocodeResult
 from .sources.google_solar import GoogleInsights, GoogleSolarClient, footprint_from_insights
 from .sources.overture import FootprintMatch, OvertureFootprints, occupancy_from_class
+from .sources.regrid import same_owner
 
 _HEADERS = {
     "id": ("id", "site id", "property id", "building id", "name", "property name", "property", "site"),
@@ -172,6 +175,8 @@ class SiteOutcome:
             "maxfit_raised_racking_kw": round(self.dc_kw + self.raised_extra_kw(), 2),
             "rooftop_kw": round(sum(e.dc_kw for b, e, c in self._triples() if c and b.structure == "building"), 2),
             "carport_kw": round(sum(e.dc_kw for b, e, c in self._triples() if c and b.structure != "building"), 2),
+            "equipment_clearance_kw_not_counted": round(sum(e.google.details.get("equipment_clearance_kw", 0)
+                                                            for e in self._counted() if e.google), 1),
             "low_yield_kw_not_counted": round(sum(e.google.details.get("low_yield_kw", 0) for e in self._counted() if e.google), 1),
             "uncounted_buildings_kw": round(sum(e.dc_kw for e in self.estimates) - self.dc_kw, 1),
             "roof_area_m2": round(sum(e.primary.gross_roof_area_m2 for e in self._counted() if e.primary), 1),
@@ -296,6 +301,8 @@ def size_sites(
     max_parcel_buildings: int = 120,
     include_carports: bool = True,
     carport_min_energy_ratio: float = 0.8,
+    max_owner_lookups: int = 10,
+    equipment_client=None,
     stale_imagery_years: float = 6.0,
     min_imagery_coverage: float = 0.25,
     outline_only_factor: float = 0.55,
@@ -363,6 +370,45 @@ def size_sites(
             found[sid] = ms
             parcel_sites.add(sid)
             o.reasons.append(f"parcel_{o.parcel.parcel_id or 'unknown'}_{len(ms)}_buildings")
+
+    # Complexes often span several parcels, one per building or phase. Follow the
+    # site's unit address points onto neighbouring parcels and keep those with the
+    # same owner (name or mailing address).
+    if parcels is not None and unit_addresses is not None:
+        for o in outcomes:
+            if o.site.id not in parcel_sites or not o.site.address:
+                continue
+            try:
+                pts = unit_addresses.unit_points(o.site.address)
+            except Exception:  # a bonus; never fail the site over it
+                pts = []
+            seen = [o.parcel.geometry]
+            extra_areas, lookups, other_owner = {}, 0, 0
+            for lat, lon in pts:
+                if lookups >= max_owner_lookups or any(g.covers(Point(lon, lat)) for g in seen):
+                    continue
+                lookups += 1
+                try:
+                    p = parcels.parcel_at(lat, lon)
+                except Exception:
+                    continue
+                seen.append(p.geometry)
+                if same_owner(p, o.parcel):
+                    extra_areas[f"{o.site.id}\x00{len(extra_areas)}"] = p.geometry
+                else:
+                    other_owner += 1
+            if extra_areas:
+                have = {m.overture_id for m in found.get(o.site.id, [])}
+                added = 0
+                for ms in footprints.in_polygons(extra_areas).values():
+                    for m in ms:
+                        if m.overture_id not in have and (include_carports or structure_kind(m) == "building"):
+                            found[o.site.id].append(m)
+                            have.add(m.overture_id)
+                            added += 1
+                o.reasons.append(f"added_{added}_buildings_from_{len(extra_areas)}_more_parcels_same_owner")
+            if other_owner:
+                o.reasons.append(f"skipped_{other_owner}_parcels_other_owner_under_unit_addresses")
 
     # Otherwise: buildings under the county's per-unit address points.
     if unit_addresses is not None and campus_m == 0:
@@ -433,7 +479,8 @@ def size_sites(
     # 3. sizing
     jobs = [(o, b) for o in outcomes for b in o.buildings]
     progress(f"Sizing {len(jobs)} buildings...")
-    results = estimate_many([b for _o, b in jobs], geometric, google_client, calibrator, policy, workers, google_max_points)
+    results = estimate_many([b for _o, b in jobs], geometric, google_client, calibrator, policy, workers, google_max_points,
+                            equipment_client)
     for (o, _b), est in zip(jobs, results):
         o.estimates.append(est)
     for o in outcomes:
