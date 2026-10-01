@@ -33,6 +33,7 @@ DEFAULT_CLEARANCES_FT = {
     "skylight": 4.0,  # code when skylights are used as the 2.2 ventilation option
     "hvac": 3.0,  # practice: NEC 110.26 working space at the unit disconnect
     "equipment": 3.0,  # detected from Google's surface model; Ivy: walking space around mechanical equipment
+    "small_equipment": 1.0,  # detected items under 0.5 m2 (vents, pipes): practice, like "vent"
     "vent": 1.0,  # practice
     "other": 1.0,  # practice
 }

@@ -26,7 +26,7 @@ from pyproj import Transformer
 from shapely.geometry import Polygon, box, mapping, shape
 from shapely.ops import unary_union
 
-from ..geometry import LocalFrame, polygons
+from ..geometry import LocalFrame, polygons, principal_axes
 
 DATA_LAYERS_URL = "https://solar.googleapis.com/v1/dataLayers:get"
 
@@ -53,6 +53,31 @@ def detect_equipment(dsm: np.ndarray, roof_mask: np.ndarray, pixel_m: float, min
     min_px = max(1, int(math.ceil(min_area_m2 / (pixel_m * pixel_m))))
     sizes = ndimage.sum(tall, labels, index=np.arange(1, n + 1))
     return [labels == i + 1 for i, s in enumerate(sizes) if s >= min_px]
+
+
+def screen_equipment(items: list[Polygon], flat_pts: np.ndarray, pitched_pts: np.ndarray, near_m: float = 5.0,
+                     min_width_m: float = 0.6, max_aspect: float = 4.0, small_m2: float = 0.5) -> list[tuple[Polygon, str]]:
+    """Keep detections that look like equipment on a flat roof, with a kind.
+
+    Coordinates are local metres. Dropped: long thin objects (parapets,
+    railings, walls between rowhouse roofs, the ridges of pitched roofs) and
+    objects whose neighbourhood holds more of Google's pitched-roof panels than
+    flat-roof ones (ridges, hips, dormers). Items under `small_m2` are vents and
+    pipes ("small_equipment", 1 ft clearance); larger ones are "equipment".
+    """
+    out = []
+    for g in items:
+        if g.is_empty:
+            continue
+        short, long_, _angle = principal_axes(g)
+        if short < min_width_m or (long_ > 4.0 and long_ / max(short, 1e-6) > max_aspect):
+            continue
+        c = np.array([g.centroid.x, g.centroid.y])
+        near = lambda pts: int((np.hypot(*(pts - c).T) <= near_m).sum()) if len(pts) else 0
+        if near(pitched_pts) > near(flat_pts):
+            continue
+        out.append((g, "small_equipment" if g.area < small_m2 else "equipment"))
+    return out
 
 
 def mask_to_polygon(mask: np.ndarray, pixel_to_xy) -> Polygon:

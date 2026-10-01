@@ -9,13 +9,18 @@ from __future__ import annotations
 
 import os
 import re
+
+import numpy as np
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 
 from .calibration import Calibrator, segment_key
 from .models import Building, Obstruction, SizingResult
 from .sizing import GeometricEstimator
-from .sources.google_solar import GoogleFilteredEstimator, GoogleInsights, GoogleLookupError, GoogleSolarClient, fetch_building
+from .geometry import LocalFrame
+from .sources.google_dsm import screen_equipment
+from .sources.google_solar import (GoogleFilteredEstimator, GoogleInsights, GoogleLookupError, GoogleSolarClient,
+                                   _segment, fetch_building)
 
 
 @dataclass(frozen=True)
@@ -179,9 +184,15 @@ def estimate_many(
                 status[i] = f"failed:{f'http_{code}' if code else type(exc).__name__ + (f'_{detail}' if detail else '')}"
                 notes[i].append(f"equipment_lookup_{status[i]}")
                 return
-            status[i] = f"found_{len(found)}"
+            frame = LocalFrame.for_geometry(buildings[i].footprint)
+            pts = {True: [], False: []}
+            for p in ins.panels:
+                pts[_segment(ins, p).pitch_deg < flat_deg].append(frame.point_to_local(p.lon, p.lat))
+            kept = screen_equipment([frame.to_local(g) for g in found], np.array(pts[True]).reshape(-1, 2),
+                                    np.array(pts[False]).reshape(-1, 2))
+            status[i] = f"found_{len(kept)}_of_{len(found)}"
             buildings[i] = replace(buildings[i], obstructions=buildings[i].obstructions
-                                   + [Obstruction(g, "equipment") for g in found])
+                                   + [Obstruction(frame.to_lonlat(g), kind) for g, kind in kept])
         with ThreadPoolExecutor(max_workers=min(workers, 4)) as pool:  # dataLayers rate-limits bursts
             list(pool.map(equip, range(len(buildings))))
     jobs = [(b, geometric, insights[i], errors[i], calibrator, policy) for i, b in enumerate(buildings)]

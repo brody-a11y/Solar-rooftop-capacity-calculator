@@ -107,8 +107,9 @@ def test_equipment_summary_line():
     from rooftop_solar.cli import _equipment_summary
 
     est = lambda s: NS(equipment_status=s)
-    outs = [NS(estimates=[est("found_3"), est("failed:http_403"), est("")]), NS(estimates=[est("failed:http_403")])]
-    assert _equipment_summary(outs) == "Rooftop equipment lookups: 1 roofs checked, 3 equipment items found, 2 failed (http_403 x2)"
+    outs = [NS(estimates=[est("found_3_of_5"), est("failed:http_403"), est("")]), NS(estimates=[est("failed:http_403")])]
+    assert _equipment_summary(outs) == ("Rooftop equipment lookups: 1 roofs checked, 3 equipment items kept of 5 detected, "
+                                        "2 failed (http_403 x2)")
     assert _equipment_summary([NS(estimates=[est("")])]) == ""
 
 
@@ -130,7 +131,7 @@ def test_pipeline_records_equipment_status():
             return [FRAME.to_lonlat(box(-17, -2, -13, 2))]
 
     est, = estimate_many([b], GeometricEstimator(), Client(), workers=1, equipment_client=Equip())
-    assert est.equipment_status == "found_1" and est.google.details["equipment_detected"] == 1
+    assert est.equipment_status == "found_1_of_1" and est.google.details["equipment_detected"] == 1
 
 
 def test_read_geotiff_with_transformation_matrix():
@@ -160,3 +161,32 @@ def test_dsm_client_retries_rate_limit(monkeypatch):
     client = GoogleDSMClient("k", cache_dir=None)
     client.session = type("S", (), {"get": lambda self, url, params=None, timeout=None: R(codes.pop(0))})()
     assert client._get("u", {}).status_code == 200 and sleeps == [2.0, 4.0]
+
+
+def test_screen_drops_walls_ridges_and_tags_vents():
+    from rooftop_solar.sources.google_dsm import screen_equipment
+
+    flat = np.array([[x, 0.0] for x in range(-10, 11)])
+    pitched = np.array([[x, 40.0] for x in range(-10, 11)] * 3)
+    items = [box(-1, -1, 0.5, 0.5),       # 1.5 m condenser on the flat roof
+             box(3, 0, 3.6, 0.6),         # 0.36 m2 vent
+             box(-10, 2, 10, 2.4),        # 20 m long, 0.4 m wide parapet/railing
+             box(-8, 39, 8, 41.5),        # ridge line on the pitched roof
+             box(-1, 39, 1, 41)]          # chimney among pitched panels
+    kept = screen_equipment(items, flat, pitched)
+    assert [k for _g, k in kept] == ["equipment", "small_equipment"]
+
+
+def test_raised_racking_never_exceeds_googles_layout_with_dense_detections():
+    import random
+
+    rng = random.Random(1)
+    b = Building("a", centered_box_ft(200, 100), Occupancy.R2)
+    eq = [Obstruction(FRAME.to_lonlat(box(x, y, x + 1, y + 1)), "equipment")
+          for x, y in [(rng.uniform(-28, 28), rng.uniform(-13, 13)) for _ in range(80)]]
+    est = GoogleFilteredEstimator(GeometricEstimator(design=DesignConfig(min_panel_energy_ratio=0.0)))
+    ins = GoogleInsights.from_response(google_response())
+    clear = est.estimate(b, ins)
+    busy = est.estimate(Building("a", b.footprint, Occupancy.R2, obstructions=eq), ins)
+    assert busy.module_count < clear.module_count
+    assert busy.module_count + busy.details["raised_racking_extra_modules"] <= clear.module_count * 1.05

@@ -75,9 +75,10 @@ def _equipment_summary(outcomes) -> str:
     st = [e.equipment_status for o in outcomes for e in o.estimates if e.equipment_status]
     if not st:
         return ""
-    ok = [s for s in st if s.startswith("found_")]
+    ok = [s.split("_") for s in st if s.startswith("found_")]  # found_<kept>_of_<detected>
+    kept, detected = sum(int(p[1]) for p in ok), sum(int(p[-1]) for p in ok)
     failed = Counter(s.split(":", 1)[1] for s in st if s.startswith("failed:"))
-    line = (f"Rooftop equipment lookups: {len(ok)} roofs checked, {sum(int(s[6:]) for s in ok)} equipment items found"
+    line = (f"Rooftop equipment lookups: {len(ok)} roofs checked, {kept} equipment items kept of {detected} detected"
             f", {sum(failed.values())} failed")
     if failed:
         line += " (" + ", ".join(f"{k} x{v}" for k, v in failed.most_common(3)) + ")"
