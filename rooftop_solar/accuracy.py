@@ -6,6 +6,9 @@ name, address, latitude, longitude, true_kw, module_w (one row per design).
 A site can have several designs (different designers' max fits); a prediction
 counts as within tolerance if it is within tolerance of any of them.
 
+A design with "racking": "raised" (CSV column racking=raised) is compared with
+the raised-racking MaxFit only; the others with the standard MaxFit.
+
 A site with "kind": "floor" (CSV column kind=floor) has only designs sized to
 load, budget or a goal, not to the roof. Those are minimums: absolute MaxFit
 should come in at or above them, so they only feed the below-design check.
@@ -43,6 +46,7 @@ def load_truth(path: str | Path) -> dict[str, dict]:
                 "kw": float(r["true_kw"]),
                 "module_w": float(r["module_w"]) if r.get("module_w") else None,
                 "source": r.get("source", ""),
+                "racking": r.get("racking") or "standard",
             })
     return truth
 
@@ -78,13 +82,17 @@ def compare(truth: dict[str, dict], outcomes: list[SiteOutcome], module_w: float
             "site": name,
             "kind": "floor" if floor else "maxfit",
             "manual_review": ";".join(o.manual_review) if o else "",
-            "designs_kw": " / ".join(f"{d['kw']:g}" + (f"@{d['module_w']:g}W" if d.get("module_w") else "") for d in t["truths"]),
+            "designs_kw": " / ".join(f"{d['kw']:g}" + (f"@{d['module_w']:g}W" if d.get("module_w") else "")
+                                     + ("R" if d.get("racking") == "raised" else "") for d in t["truths"]),
             "buildings_found": len(o.buildings) if o else 0,
             "location": f"{o.geocode.source}:{o.geocode.precision}" if o and o.geocode else "",
         }
+        raised_designs = [d for d in t["truths"] if d.get("racking") == "raised"]
+        standard_designs = [d for d in t["truths"] if d.get("racking") != "raised"] or t["truths"]
         for label, kw in (("tool", final), ("raised", raised), ("footprint_only", geo), ("google", goo), ("google_unclipped", raw)):
             if kw:
-                err, _ = _best_error(kw, t["truths"], module_w, floor)
+                designs = (raised_designs or t["truths"]) if label == "raised" else standard_designs
+                err, _ = _best_error(kw, designs, module_w, floor)
                 row[f"{label}_kw"] = round(kw, 1)
                 row[f"{label}_err"] = f"{err:+.0%}"
                 row[f"{label}_within"] = abs(err) <= tolerance

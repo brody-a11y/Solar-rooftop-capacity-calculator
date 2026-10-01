@@ -221,3 +221,23 @@ def test_floor_designs_feed_below_check_only():
 def test_best_error_on_floor_uses_largest_design():
     err, design = _best_error(100.0, [{"kw": 90}, {"kw": 120}], module_w=550, floor=True)
     assert design["kw"] == 120 and err < 0
+
+
+def test_raised_designs_compared_with_raised_column_only(tmp_path, footprints, monkeypatch):
+    import json
+
+    monkeypatch.setattr(cli, "OvertureFootprints", lambda **kw: footprints)
+    monkeypatch.setattr(GoogleSolarClient, "building_insights", lambda self, lat, lon, required_quality="MEDIUM": _fake_insights(lat, lon))
+    monkeypatch.setenv("GOOGLE_SOLAR_API_KEY", "test")
+    lon, lat = ll(30, 20)
+    truth = tmp_path / "truth.json"
+    truth.write_text(json.dumps({"W": {"address": "", "lat": lat, "lon": lon, "truths": [
+        {"kw": 1000, "module_w": 550, "racking": "raised"}, {"kw": 30, "module_w": 550}]}}))
+    out = tmp_path / "acc.csv"
+    assert cli.main(["accuracy", "--truth", str(truth), "--out", str(out), "--google", "--google-cache", str(tmp_path / "gc"),
+                     "--workers", "1"]) == 0
+    with out.open() as f:
+        row = list(csv.DictReader(f))[0]
+    assert float(row["tool_err"].rstrip("%")) > -50  # standard compared with the 30 kW design, not 1000
+    assert float(row["raised_err"].rstrip("%")) < -90  # raised compared with the 1000 kW raised design
+    assert "1000@550WR" in row["designs_kw"]

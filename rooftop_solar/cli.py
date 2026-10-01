@@ -207,7 +207,8 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
         cells = [f"{str(r[k + '_kw']):>7} {r[k + '_err']:>5}" for k in ("tool", "raised", "footprint_only")]
         designs = (">=" if r["kind"] == "floor" else "") + r["designs_kw"]
         print(f"{r['site'][:20]:20} {designs[:17]:17} {' '.join(cells)}  {'YES' if r['manual_review'] else ''}")
-    print("(>= : design sized to load or budget, so MaxFit should be at least this)")
+    print("(>= : design sized to load or budget, so MaxFit should be at least this; R : raised-racking design,\n"
+          " compared with the raised column only)")
     print()
     print(summary(rows))
     if len(sweep) > 1:
