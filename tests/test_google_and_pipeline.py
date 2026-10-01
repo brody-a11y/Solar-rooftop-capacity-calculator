@@ -174,7 +174,7 @@ def test_low_yield_panels_dropped_by_energy_cutoff():
     for i, p in enumerate(resp["solarPotential"]["solarPanels"]):
         p["yearlyEnergyDcKwh"] = 600.0 if i % 2 == 0 else 300.0  # half the panels produce half as much
     ins = GoogleInsights.from_response(resp)
-    flush = DesignConfig(flat_racking=Racking.FLUSH)
+    flush = DesignConfig(flat_racking=Racking.FLUSH, min_panel_energy_ratio=0.0)
     all_kept = GoogleFilteredEstimator(GeometricEstimator(design=flush)).estimate(b, ins)
     import dataclasses
     cut = GoogleFilteredEstimator(GeometricEstimator(design=dataclasses.replace(flush, min_panel_energy_ratio=0.8))).estimate(b, ins)
