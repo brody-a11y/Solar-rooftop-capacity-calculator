@@ -16,8 +16,10 @@ from pathlib import Path
 
 import requests
 from shapely import affinity
+from shapely.errors import GEOSException
 from shapely.geometry import Point, Polygon, box
 from shapely.ops import unary_union
+from shapely.validation import make_valid
 
 from ..geometry import LocalFrame, polygons
 from ..models import Building, Racking, SizingResult
@@ -362,8 +364,11 @@ class GoogleFilteredEstimator:
         reach = self.geometric.rules.clearance_m("equipment") + design.module.length_m
         over_equipment = (unary_union([frame.to_local(o.geometry) for o in equipment]).buffer(reach, join_style="mitre")
                           if equipment else None)
-        raised_extra, raised_gaps = self._raised_racking_modules(kept_flat, dropped, raised_zone, flat_density, design,
-                                                                 over_equipment)
+        try:
+            raised_extra, raised_gaps = self._raised_racking_modules(kept_flat, dropped, raised_zone, flat_density, design,
+                                                                     over_equipment)
+        except GEOSException:  # invalid geometry from Google's panels: no raised-racking estimate for this roof
+            raised_extra, raised_gaps = 0, []
 
         flags = []
         if 0 < count < design.min_modules_per_structure:
@@ -430,17 +435,22 @@ class GoogleFilteredEstimator:
         g = design.raised_gap_m
         layout = unary_union(flat_rects).buffer(0.5, join_style="mitre").buffer(-0.5, join_style="mitre")
         # opening drops slivers under ~1.5 m wide: setback edges, ragged row ends
+        layout = make_valid(layout)
+        zone = make_valid(zone)
         blocked = unary_union([layout, *dropped_rects]) if dropped_rects else layout
         free = zone.difference(blocked).buffer(-0.75, join_style="mitre").buffer(0.75, join_style="mitre")
         near_layout = layout.buffer(0.3, join_style="mitre")
         gaps = []
-        for gap in polygons(free):
+        for gap in polygons(make_valid(free)):
             if gap.length == 0:
                 continue
-            if gap.buffer(-g).is_empty and gap.boundary.intersection(near_layout).length >= 0.6 * gap.length:
-                gaps.append(gap)
-            elif over_equipment is not None:
-                gaps.extend(p for p in polygons(gap.intersection(over_equipment)) if p.area > 1.0)
+            try:
+                if gap.buffer(-g).is_empty and gap.boundary.intersection(near_layout).length >= 0.6 * gap.length:
+                    gaps.append(gap)
+                elif over_equipment is not None:
+                    gaps.extend(p for p in polygons(gap.intersection(over_equipment)) if p.area > 1.0)
+            except GEOSException:  # a degenerate sliver; skip it rather than fail the building
+                continue
         return int(sum(gap.area for gap in gaps) * flat_density // design.module.area_m2), gaps
 
     def _poleward(self, azimuth_deg: float, lat: float) -> bool:

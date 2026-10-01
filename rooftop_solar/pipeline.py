@@ -118,7 +118,16 @@ def estimate_site(
 def _size_one(job) -> SiteEstimate:
     building, geometric, insights, error, calibrator, policy = job
     google = GoogleFilteredEstimator(geometric) if insights else None
-    est = estimate_site(building, geometric, google, insights, calibrator, policy)
+    try:
+        est = estimate_site(building, geometric, google, insights, calibrator, policy)
+    except Exception as exc:  # one bad geometry must not stop a batch: fall back to the outline
+        try:
+            est = estimate_site(building, geometric, None, None, calibrator, policy)
+            est.reasons.insert(0, f"google_sizing_error:{type(exc).__name__}_sized_from_outline")
+        except Exception as exc2:
+            est = SiteEstimate(building.id, 0.0, 0.0, "error", 1.0, "none", None, True,
+                               [f"sizing_error:{type(exc2).__name__}"])
+        est.needs_review = True
     if error:
         est.reasons.insert(0, f"google_error:{error}")
         est.needs_review = True

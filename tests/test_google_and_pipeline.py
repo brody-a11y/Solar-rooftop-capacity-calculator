@@ -263,3 +263,17 @@ def test_kml_draws_raised_racking_areas(tmp_path):
     path = tmp_path / "l.kml"
     write_kml_layouts([r], path)
     assert path.read_text().count("raised racking only") == 1
+
+
+def test_one_bad_building_does_not_stop_the_batch(monkeypatch):
+    from rooftop_solar.pipeline import ReviewPolicy, _size_one
+
+    b = Building("a", centered_box_ft(200, 100), Occupancy.COMMERCIAL)
+
+    def boom(self, building, insights):
+        raise ValueError("bad geometry")
+
+    monkeypatch.setattr(GoogleFilteredEstimator, "estimate", boom)
+    est = _size_one((b, GeometricEstimator(), GoogleInsights.from_response(google_response()), None, None, ReviewPolicy()))
+    assert est.method == "geometric" and est.dc_kw > 0
+    assert est.reasons[0] == "google_sizing_error:ValueError_sized_from_outline" and est.needs_review
