@@ -6,3 +6,11 @@ __pycache__/
 build/
 dist/
 .DS_Store
+# tool outputs written next to inputs
+*_results.csv
+*_results_buildings.csv
+*_results_properties.csv
+*_layouts.kml
+*_layouts.geojson
+*_accuracy.csv
+*_accuracy.kml
