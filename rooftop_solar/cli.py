@@ -94,6 +94,23 @@ def cmd_size(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parcels(args: argparse.Namespace):
+    """Regrid client when a token is available (env var or saved file), else None."""
+    if args.no_parcels:
+        return None
+    token = os.environ.get("REGRID_TOKEN", "").strip()
+    path = os.path.expanduser(args.regrid_token_file)
+    if not token and os.path.exists(path):
+        with open(path) as f:
+            token = f.read().strip()
+    if not token:
+        return None
+    from .sources.regrid import RegridClient
+
+    print("Regrid parcels on (one parcel record per new site).")
+    return RegridClient(token)
+
+
 def _unit_addresses(args: argparse.Namespace, sites):
     if args.no_unit_points or not any(s.address for s in sites):
         return None
@@ -124,6 +141,7 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
         sites, footprints, geometric, geocoder, client, calibrator, ReviewPolicy(),
         search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
         google_max_points=args.google_max_points, unit_addresses=_unit_addresses(args, sites),
+        parcels=_parcels(args),
     )
     site_rows = [o.row() for o in outcomes]
     _write_csv(site_rows, args.out, "site_id")
@@ -154,6 +172,7 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
         sites, OvertureFootprints(workers=args.workers), geometric, geocoder, client, calibrator,
         ReviewPolicy(), search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
         google_max_points=args.google_max_points, unit_addresses=_unit_addresses(args, sites),
+        parcels=_parcels(args),
     )
     rows = compare(truth, outcomes, geometric.design.module.watts_dc)
     _write_csv(rows, args.out, "site")
@@ -218,6 +237,9 @@ def build_parser() -> argparse.ArgumentParser:
     design.add_argument("--google-max-points", type=int, default=9,
                         help="max Google lookups per building; large buildings are split by Google into pieces")
     design.add_argument("--workers", type=int, default=8)
+    design.add_argument("--no-parcels", action="store_true", help="don't use Regrid parcel boundaries")
+    design.add_argument("--regrid-token-file", default="~/.rooftop-solar/regrid_token",
+                        help="file holding a Regrid API token (or set REGRID_TOKEN)")
     design.add_argument("--no-unit-points", action="store_true",
                         help="don't add buildings found under county per-unit address points")
     design.add_argument("--module-watts", type=float, default=550.0)

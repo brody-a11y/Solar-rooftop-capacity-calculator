@@ -224,3 +224,28 @@ class OvertureFootprints:
                     m.distance_m = d
                     out.append(m)
         return out
+
+
+    def in_polygons(self, areas: dict, min_overlap: float = 0.5) -> dict[str, list[FootprintMatch]]:
+        """Buildings lying mostly (>= `min_overlap` of their area) inside each
+        key -> lon/lat polygon, e.g. a parcel. Largest building first."""
+        points, radius = {}, {}
+        for key, poly in areas.items():
+            c = poly.representative_point()
+            frame = LocalFrame(c.x, c.y)
+            local = frame.to_local(poly)
+            points[key] = (c.x, c.y)
+            radius[key] = max(Point(0, 0).distance(Point(xy)) for g in getattr(local, "geoms", [local]) for xy in g.exterior.coords)
+        out: dict[str, list[FootprintMatch]] = {}
+        for key, poly in areas.items():
+            r = radius[key] + 5.0
+            found = self.find({key: points[key]}, search_m=r, campus_m=r)[key]
+            frame = LocalFrame(*points[key])
+            local_poly = frame.to_local(poly)
+            keep = []
+            for m in found:
+                fp = frame.to_local(m.footprint)
+                if fp.area > 0 and fp.intersection(local_poly).area >= min_overlap * fp.area:
+                    keep.append((fp.area, m))
+            out[key] = [m for _a, m in sorted(keep, key=lambda t: -t[0])]
+        return out

@@ -55,6 +55,11 @@ Checking accuracy against your own designs
   the right buildings were matched.
 
 Optional
+- Regrid parcels (finds every building on a multi-building property): save
+  your Regrid API token as ~/.rooftop-solar/regrid_token. It is used
+  automatically. The free trial token only covers 7 sample counties
+  (e.g. Dallas County, TX); examples/regrid_trial_dallas.csv has three real
+  Dallas apartment buildings for checking that it works.
 - Calibration: put calibration.json in the same folder as your buildings file
   and it is applied automatically.
 - Google Solar cross-check: save your API key as a plain text file at

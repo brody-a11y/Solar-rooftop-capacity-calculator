@@ -108,6 +108,7 @@ class SiteOutcome:
     buildings: list[Building] = field(default_factory=list)
     estimates: list[SiteEstimate] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
+    parcel: object | None = None  # regrid.Parcel when parcel lookup succeeded
 
     @property
     def dc_kw(self) -> float:
@@ -126,6 +127,8 @@ class SiteOutcome:
             "lat": round(g.lat, 7) if g else "",
             "lon": round(g.lon, 7) if g else "",
             "location_source": f"{g.source}:{g.precision}" if g else "",
+            "parcel_id": getattr(self.parcel, "parcel_id", ""),
+            "parcel_acres": getattr(self.parcel, "acres", "") or "",
             "buildings": len(self.buildings),
             "dc_kw": round(self.dc_kw, 2),
             "raw_kw": round(sum(e.raw_kw for e in self.estimates), 2),
@@ -225,6 +228,8 @@ def size_sites(
     tie_m: float = 10.0,
     google_max_points: int = 9,
     unit_addresses=None,
+    parcels=None,
+    max_parcel_buildings: int = 40,
 ) -> list[SiteOutcome]:
     outcomes = [SiteOutcome(s) for s in sites]
 
@@ -256,11 +261,39 @@ def size_sites(
     progress(f"Finding building footprints for {len(located)} sites (first run builds an index, ~1 min)...")
     found = footprints.find(located, search_m=search_m, campus_m=campus_m) if located else {}
 
-    # Multi-building properties: buildings under the county's per-unit address points.
+    # Multi-building properties, best source first: the parcel (every building on it).
+    parcel_sites: set[str] = set()
+    if parcels is not None:
+        progress(f"Looking up parcels for {len(located)} sites...")
+        areas = {}
+        for o in outcomes:
+            if not o.geocode:
+                continue
+            try:
+                parcel = parcels.parcel_at(o.geocode.lat, o.geocode.lon)
+            except Exception as exc:  # parcel data is a refinement; fall back to the address match
+                o.reasons.append(f"parcel_lookup_failed:{exc}")
+                continue
+            o.parcel = parcel
+            areas[o.site.id] = parcel.geometry
+        on_parcel = footprints.in_polygons(areas) if areas else {}
+        for sid, ms in on_parcel.items():
+            o = next(x for x in outcomes if x.site.id == sid)
+            if not ms:
+                o.reasons.append("no_mapped_buildings_on_parcel")
+                continue
+            if len(ms) > max_parcel_buildings:
+                o.reasons.append(f"parcel_has_{len(ms)}_buildings_kept_largest_{max_parcel_buildings}_check")
+                ms = ms[:max_parcel_buildings]
+            found[sid] = ms
+            parcel_sites.add(sid)
+            o.reasons.append(f"parcel_{o.parcel.parcel_id or 'unknown'}_{len(ms)}_buildings")
+
+    # Otherwise: buildings under the county's per-unit address points.
     if unit_addresses is not None and campus_m == 0:
         unit_pts: dict[str, tuple[float, float]] = {}
         for o in outcomes:
-            if not (o.geocode and o.site.address and found.get(o.site.id)):
+            if not (o.geocode and o.site.address and found.get(o.site.id)) or o.site.id in parcel_sites:
                 continue
             try:
                 pts = unit_addresses.unit_points(o.site.address)
@@ -300,11 +333,14 @@ def size_sites(
         m0 = o.matches[0]
         # Street-level points (Census) normally land a few metres off the building;
         # only flag matches that are far away or nearly tied with another building.
-        if m0.distance_m > far_m:
+        # Parcel matches don't depend on the point, so they skip this check.
+        if o.site.id in parcel_sites:
+            pass
+        elif m0.distance_m > far_m:
             o.reasons.append(f"address_point_{m0.distance_m:.0f}m_from_building_check_match")
         elif m0.distance_m > 0 and m0.runner_up_m is not None and m0.runner_up_m - m0.distance_m < tie_m:
             o.reasons.append("two_buildings_equally_close_check_match")
-        if len(o.matches) > 1:
+        if len(o.matches) > 1 and o.site.id not in parcel_sites:
             source = "unit_address_points" if campus_m == 0 else f"{campus_m:.0f}m_radius"
             o.reasons.append(f"campus_{len(o.matches)}_buildings_from_{source}")
         for n, m in enumerate(o.matches):

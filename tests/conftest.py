@@ -40,3 +40,12 @@ def footprints(tmp_path):
     _write_dataset(data)
     return OvertureFootprints(cache_dir=tmp_path / "cache", release="test", filesystem=pafs.LocalFileSystem(), base_path=str(data))
 
+
+
+@pytest.fixture(autouse=True)
+def _isolate_from_real_credentials(tmp_path, monkeypatch):
+    """Self-tests run on users' machines (Install.command): never read their saved
+    Regrid token or Google key, so tests can't make billed calls."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("REGRID_TOKEN", raising=False)
+    monkeypatch.delenv("GOOGLE_SOLAR_API_KEY", raising=False)
