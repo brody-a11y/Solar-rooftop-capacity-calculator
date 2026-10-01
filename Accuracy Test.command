@@ -17,6 +17,7 @@ fi
 echo "Drag the truth file (e.g. truth_drive.json) into this window, then press Return:"
 read -r IN
 IN="$(printf '%s' "$IN" | sed -e 's/[[:space:]]*$//' -e "s/^'\(.*\)'$/\1/" -e 's/\\\(.\)/\1/g')"
+case "$IN" in "~/"*) IN="$HOME/${IN#\~/}" ;; esac  # typed paths starting with ~
 if [ ! -f "$IN" ]; then
   echo "Can't find that file: $IN"
   finish 1

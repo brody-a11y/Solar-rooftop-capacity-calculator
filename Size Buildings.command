@@ -23,6 +23,7 @@ echo "Drag your address spreadsheet (.csv) or Google Earth file (.kml/.kmz) into
 read -r IN
 # Undo the escaping macOS adds when a file is dragged into Terminal.
 IN="$(printf '%s' "$IN" | sed -e 's/[[:space:]]*$//' -e "s/^'\(.*\)'$/\1/" -e 's/\\\(.\)/\1/g')"
+case "$IN" in "~/"*) IN="$HOME/${IN#\~/}" ;; esac  # typed paths starting with ~
 if [ ! -f "$IN" ]; then
   echo "Can't find that file: $IN"
   finish 1
