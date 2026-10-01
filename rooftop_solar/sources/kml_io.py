@@ -189,6 +189,8 @@ def write_kml_layouts(results: list[SizingResult], path: str | Path) -> None:
         "<PolyStyle><color>cc8b3d1f</color></PolyStyle></Style>",
         '<Style id="roof"><LineStyle><color>ff00ffff</color><width>2</width></LineStyle>'
         "<PolyStyle><fill>0</fill></PolyStyle></Style>",
+        '<Style id="equipment"><LineStyle><color>ff0000ff</color><width>2</width></LineStyle>'
+        "<PolyStyle><color>660000ff</color></PolyStyle></Style>",
         '<Style id="raised"><LineStyle><color>ff0080ff</color><width>1</width></LineStyle>'
         "<PolyStyle><color>990080ff</color></PolyStyle></Style>",
     ]
@@ -204,6 +206,13 @@ def write_kml_layouts(results: list[SizingResult], path: str | Path) -> None:
         for poly in r.layout:
             parts.append(
                 "<Placemark><styleUrl>#module</styleUrl><Polygon><outerBoundaryIs><LinearRing>"
+                f"<coordinates>{_ring(poly.exterior.coords)}</coordinates>"
+                "</LinearRing></outerBoundaryIs></Polygon></Placemark>"
+            )
+        for poly in r.equipment:
+            parts.append(
+                "<Placemark><name>rooftop equipment</name><styleUrl>#equipment</styleUrl>"
+                "<Polygon><outerBoundaryIs><LinearRing>"
                 f"<coordinates>{_ring(poly.exterior.coords)}</coordinates>"
                 "</LinearRing></outerBoundaryIs></Polygon></Placemark>"
             )

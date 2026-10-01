@@ -81,3 +81,4 @@ class SizingResult:
     layout: list[Polygon] = field(default_factory=list)  # placed modules, lon/lat
     footprint: Polygon | None = None  # lon/lat, for QA output
     raised_areas: list[Polygon] = field(default_factory=list)  # lon/lat gaps raised racking would fill
+    equipment: list[Polygon] = field(default_factory=list)  # lon/lat rooftop equipment detected and kept clear of

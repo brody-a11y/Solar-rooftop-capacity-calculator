@@ -190,3 +190,21 @@ def test_raised_racking_never_exceeds_googles_layout_with_dense_detections():
     busy = est.estimate(Building("a", b.footprint, Occupancy.R2, obstructions=eq), ins)
     assert busy.module_count < clear.module_count
     assert busy.module_count + busy.details["raised_racking_extra_modules"] <= clear.module_count * 1.05
+
+
+def test_outline_estimate_ignores_detected_equipment_and_kml_draws_it(tmp_path):
+    from rooftop_solar.pipeline import estimate_site
+    from rooftop_solar.sources.kml_io import write_kml_layouts
+
+    field = Obstruction(FRAME.to_lonlat(box(-17, -2, -13, 2)), "equipment")
+    plain = Building("a", centered_box_ft(200, 100), Occupancy.R2)
+    busy = Building("a", plain.footprint, Occupancy.R2, obstructions=[field])
+    geo = GeometricEstimator()
+    ins = GoogleInsights.from_response(google_response())
+    a = estimate_site(plain, geo, GoogleFilteredEstimator(geo), ins)
+    b = estimate_site(busy, geo, GoogleFilteredEstimator(geo), ins)
+    assert b.geometric.module_count == a.geometric.module_count  # outline-only stays an upper bound
+    assert b.google.module_count < a.google.module_count
+    path = tmp_path / "l.kml"
+    write_kml_layouts([b.primary], path)
+    assert path.read_text().count("rooftop equipment") == 1

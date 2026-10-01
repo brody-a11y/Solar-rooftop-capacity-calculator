@@ -419,6 +419,7 @@ class GoogleFilteredEstimator:
             layout=[frame.to_lonlat(r) for r in kept],
             footprint=building.footprint,
             raised_areas=[frame.to_lonlat(g) for g in raised_gaps],
+            equipment=[o.geometry for o in equipment],
         )
 
     @staticmethod

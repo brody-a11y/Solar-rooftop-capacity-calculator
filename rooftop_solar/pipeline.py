@@ -9,17 +9,17 @@ from __future__ import annotations
 
 import os
 import re
-
-import numpy as np
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 
+import numpy as np
+
 from .calibration import Calibrator, segment_key
+from .geometry import LocalFrame
 from .models import Building, Obstruction, SizingResult
 from .sizing import GeometricEstimator
-from .geometry import LocalFrame
 from .sources.google_dsm import screen_equipment
-from .sources.google_solar import (GoogleFilteredEstimator, GoogleInsights, GoogleLookupError, GoogleSolarClient,
+from .sources.google_solar import (DETECTED_KINDS, GoogleFilteredEstimator, GoogleInsights, GoogleLookupError, GoogleSolarClient,
                                    _segment, fetch_building)
 
 
@@ -83,7 +83,10 @@ def estimate_site(
     policy: ReviewPolicy = ReviewPolicy(),
 ) -> SiteEstimate:
     reasons: list[str] = []
-    geo = geometric.estimate(building)
+    # Outline-only stays an upper bound (and the fallback) without detected
+    # equipment; equipment clearance applies to the Google layout.
+    geo = geometric.estimate(replace(building, obstructions=[o for o in building.obstructions
+                                                             if o.kind not in DETECTED_KINDS]))
     goo = google.estimate(building, insights) if google and insights else None
 
     ratio = goo.dc_kw / geo.dc_kw if goo and geo.dc_kw > 0 else None
