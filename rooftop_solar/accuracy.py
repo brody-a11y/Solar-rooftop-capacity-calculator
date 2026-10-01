@@ -93,4 +93,10 @@ def summary(rows: list[dict], tolerance: float = 0.10) -> str:
         sized = [r for r in rows if r[f"{label}_kw"] != ""]
         hits = sum(1 for r in sized if r[f"{label}_within"])
         lines.append(f"{label:17} {hits} of {len(sized)} sized sites within ±{tolerance:.0%} ({len(rows) - len(sized)} not sized)")
+    # Reference designs are often trimmed to the most cost-efficient roofs, i.e. lower
+    # bounds on absolute MaxFit: the meaningful failure is coming in below them.
+    sized = [r for r in rows if r["tool_err"]]
+    below = [r["site"] for r in sized if float(r["tool_err"].rstrip("%")) / 100 < -tolerance]
+    lines.append(f"\nIf designs are lower bounds (cost-trimmed): {len(sized) - len(below)} of {len(sized)} sites at or above "
+                 f"design (within -{tolerance:.0%}); below: {', '.join(below) or 'none'}")
     return "\n".join(lines)
