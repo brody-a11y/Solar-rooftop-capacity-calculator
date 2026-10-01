@@ -38,6 +38,7 @@ class GooglePanel:
     lat: float
     orientation: str  # LANDSCAPE or PORTRAIT
     segment_index: int
+    yearly_kwh: float = 0.0  # Google's modelled yearly DC energy for this panel
 
 
 @dataclass
@@ -78,6 +79,7 @@ class GoogleInsights:
                     p["center"]["latitude"],
                     p.get("orientation", "LANDSCAPE"),
                     p.get("segmentIndex", 0),
+                    float(p.get("yearlyEnergyDcKwh", 0.0) or 0.0),
                 )
                 for p in sp.get("solarPanels", [])
             ],
@@ -133,7 +135,7 @@ def merge_insights(parts: list[GoogleInsights]) -> GoogleInsights:
     for part in parts:
         offset = len(segments)
         segments.extend(part.segments)
-        panels.extend(GooglePanel(p.lon, p.lat, p.orientation, p.segment_index + offset) for p in part.panels)
+        panels.extend(GooglePanel(p.lon, p.lat, p.orientation, p.segment_index + offset, p.yearly_kwh) for p in part.panels)
     worst = min(parts, key=lambda x: _QUALITY_RANK.get(x.imagery_quality, 0))
     return GoogleInsights(
         imagery_quality=worst.imagery_quality,
@@ -298,6 +300,9 @@ class GoogleFilteredEstimator:
         kept, kept_surface_m2, flat_surface_m2 = [], 0.0, 0.0
         all_surface_m2 = all_flat_m2 = 0.0  # every Google panel, ignoring the code zone
         poleward_m2 = 0.0  # pitched panels facing away from the sun (north in the US)
+        low_yield_m2 = 0.0  # panels producing well below the building's best ones
+        best_kwh = max((p.yearly_kwh for p in insights.panels), default=0.0)
+        min_kwh = design.min_panel_energy_ratio * best_kwh
         kinds = set()
         for p in insights.panels:
             seg = _segment(insights, p)
@@ -313,6 +318,9 @@ class GoogleFilteredEstimator:
                 poleward_m2 += across * down
                 if design.exclude_poleward_faces:
                     continue
+            if min_kwh > 0 and p.yearly_kwh < min_kwh:
+                low_yield_m2 += across * down
+                continue
             kept.append(rect)
             area = across * down
             kept_surface_m2 += area
@@ -354,6 +362,7 @@ class GoogleFilteredEstimator:
                 "google_buildings_merged": insights.buildings_merged,
                 "poleward_face_kw": round(int(poleward_m2 // design.module.area_m2) * design.module.watts_dc / 1000.0, 1),
                 "poleward_faces_excluded": design.exclude_poleward_faces,
+                "low_yield_kw": round(int(low_yield_m2 // design.module.area_m2) * design.module.watts_dc / 1000.0, 1),
                 "imagery_quality": insights.imagery_quality,
                 "imagery_date": insights.imagery_date,
                 "flat_density_factor": round(flat_density, 3),

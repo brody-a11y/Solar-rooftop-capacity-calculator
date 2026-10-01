@@ -166,3 +166,17 @@ def test_north_facing_pitched_panels_left_out_by_default():
     assert r_s.module_count > 0 and r_s.details["poleward_face_kw"] == 0
     keep = GoogleFilteredEstimator(GeometricEstimator(design=DesignConfig(exclude_poleward_faces=False))).estimate(b, north)
     assert keep.module_count > 0
+
+
+def test_low_yield_panels_dropped_by_energy_cutoff():
+    b = Building("a", centered_box_ft(200, 100), Occupancy.COMMERCIAL)
+    resp = google_response()
+    for i, p in enumerate(resp["solarPotential"]["solarPanels"]):
+        p["yearlyEnergyDcKwh"] = 600.0 if i % 2 == 0 else 300.0  # half the panels produce half as much
+    ins = GoogleInsights.from_response(resp)
+    flush = DesignConfig(flat_racking=Racking.FLUSH)
+    all_kept = GoogleFilteredEstimator(GeometricEstimator(design=flush)).estimate(b, ins)
+    import dataclasses
+    cut = GoogleFilteredEstimator(GeometricEstimator(design=dataclasses.replace(flush, min_panel_energy_ratio=0.8))).estimate(b, ins)
+    assert cut.module_count == pytest.approx(all_kept.module_count / 2, abs=2)
+    assert cut.details["low_yield_kw"] > 0

@@ -38,6 +38,9 @@ class DesignConfig:
     # southern hemisphere) are left out of Google layouts; designers rarely use them.
     exclude_poleward_faces: bool = True
     poleward_cone_deg: float = 45.0
+    # Drop Google panels whose modelled yearly energy is below this fraction of the
+    # building's best panel (0 = keep all). Shaded or weak faces that designers skip.
+    min_panel_energy_ratio: float = 0.0
 
 
 def _module_dims(module: Module, orientation: str) -> tuple[float, float]:

@@ -62,7 +62,7 @@ def compare(truth: dict[str, dict], outcomes: list[SiteOutcome], module_w: float
     by_id = {o.site.id: o for o in outcomes}
     for name, t in truth.items():
         o = by_id.get(name)
-        est = o.estimates if o else []
+        est = o._counted() if o else []
         final = sum(e.dc_kw for e in est)
         geo = sum(e.geometric.dc_kw for e in est if e.geometric)
         goo = sum(e.google.dc_kw for e in est if e.google) if any(e.google for e in est) else None

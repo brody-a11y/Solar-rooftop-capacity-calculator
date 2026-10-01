@@ -137,3 +137,45 @@ def test_parcel_lookup_retries_after_timeout(tmp_path, monkeypatch):
     monkeypatch.setattr(regrid_mod.requests.Session, "get", always_slow)
     with pytest.raises(RegridError, match="timeout"):
         RegridClient("t", cache_dir=tmp_path / "x").parcel_at(lat + 1, lon)
+
+
+def test_structure_kind_flags_carports_and_garages():
+    from rooftop_solar.sites import structure_kind
+    from rooftop_solar.sources.overture import FootprintMatch
+
+    def m(b, cls=None):
+        return FootprintMatch("x", FRAME.to_lonlat(b), 0.0, cls, None, None, None, None)
+
+    assert structure_kind(m(box(0, 0, 40, 15))) == "building"
+    assert structure_kind(m(box(0, 0, 60, 6))) == "carport_or_garage"  # long narrow carport row
+    assert structure_kind(m(box(0, 0, 8, 8))) == "carport_or_garage"  # 64 m2 shed
+    assert structure_kind(m(box(0, 0, 40, 15), "garage")) == "carport_or_garage"
+
+
+def test_outline_only_buildings_not_counted_when_google_covers_parcel(footprints):
+    from rooftop_solar.sources.google_solar import GoogleSolarClient
+    from .test_accuracy import _fake_insights
+
+    class Client(GoogleSolarClient):
+        """Google knows apt-a only; apt-b gets outline-only sizing."""
+
+        def __init__(self):
+            pass
+
+        def building_insights(self, lat, lon, required_quality="MEDIUM"):
+            x, y = FRAME.point_to_local(lon, lat)
+            if y > 25:
+                resp = regrid_mod.requests.Response()
+                resp.status_code = 404
+                raise regrid_mod.requests.HTTPError(response=resp)
+            clon, clat = FRAME.point_to_lonlat(220, 7)
+            return _fake_insights(clat, clon)
+
+    lon, lat = ll(220, 7)
+    out = size_sites([Site("Oak", lat=lat, lon=lon)], footprints, GeometricEstimator(), google_client=Client(),
+                     workers=1, progress=lambda *_: None, parcels=_FakeParcels())[0]
+    assert len(out.estimates) == 2 and out.counted.count(True) == 1
+    assert "not_counted_1_buildings_without_google_data" in out.reasons
+    row = out.row()
+    assert row["dc_kw"] == pytest.approx(sum(e.dc_kw for e, c in zip(out.estimates, out.counted) if c), abs=0.01)
+    assert row["uncounted_buildings_kw"] > 0

@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .calibration import Calibrator
-from .geometry import LocalFrame
+from .geometry import LocalFrame, principal_axes
 from .models import Building, Occupancy
 from .pipeline import ReviewPolicy, SiteEstimate, estimate_many
 from .sizing import GeometricEstimator
@@ -109,10 +109,15 @@ class SiteOutcome:
     estimates: list[SiteEstimate] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
     parcel: object | None = None  # regrid.Parcel when parcel lookup succeeded
+    counted: list[bool] = field(default_factory=list)  # per estimate: included in the site total
+
+    def _counted(self):
+        flags = self.counted or [True] * len(self.estimates)
+        return [e for e, c in zip(self.estimates, flags) if c]
 
     @property
     def dc_kw(self) -> float:
-        return sum(e.dc_kw for e in self.estimates)
+        return sum(e.dc_kw for e in self._counted())
 
     def row(self) -> dict:
         g = self.geocode
@@ -139,19 +144,22 @@ class SiteOutcome:
             "parcel_acres": getattr(self.parcel, "acres", "") or "",
             "buildings": len(self.buildings),
             "dc_kw": round(self.dc_kw, 2),
-            "raw_kw": round(sum(e.raw_kw for e in self.estimates), 2),
-            "module_count": sum(e.primary.module_count for e in self.estimates if e.primary),
-            "north_faces_kw_not_counted": round(sum(e.google.details.get("poleward_face_kw", 0) for e in self.estimates
+            "raw_kw": round(sum(e.raw_kw for e in self._counted()), 2),
+            "module_count": sum(e.primary.module_count for e in self._counted() if e.primary),
+            "north_faces_kw_not_counted": round(sum(e.google.details.get("poleward_face_kw", 0) for e in self._counted()
                                                     if e.google and e.google.details.get("poleward_faces_excluded")), 1),
-            "roof_area_m2": round(sum(e.primary.gross_roof_area_m2 for e in self.estimates if e.primary), 1),
+            "low_yield_kw_not_counted": round(sum(e.google.details.get("low_yield_kw", 0) for e in self._counted() if e.google), 1),
+            "uncounted_buildings_kw": round(sum(e.dc_kw for e in self.estimates) - self.dc_kw, 1),
+            "roof_area_m2": round(sum(e.primary.gross_roof_area_m2 for e in self._counted() if e.primary), 1),
             "needs_review": bool(reasons),
             "reasons": ";".join(reasons),
         }
 
     def building_rows(self) -> list[dict]:
         rows = []
-        for b, m, e in zip(self.buildings, self.matches, self.estimates):
-            r = {"site_id": self.site.id, **e.row(b.occupancy.value)}
+        flags = self.counted or [True] * len(self.estimates)
+        for b, m, e, c in zip(self.buildings, self.matches, self.estimates, flags):
+            r = {"site_id": self.site.id, "counted": c, **e.row(b.occupancy.value)}
             r.update(
                 overture_id=m.overture_id,
                 overture_class=m.building_class or "",
@@ -162,6 +170,24 @@ class SiteOutcome:
             )
             rows.append(r)
         return rows
+
+
+_NON_ROOF_CLASSES = {"carport", "garage", "garages", "shed", "roof", "parking", "kiosk", "hut"}
+
+
+def structure_kind(m: FootprintMatch, min_area_m2: float = 100.0, carport_width_m: float = 8.0,
+                   carport_aspect: float = 3.5) -> str:
+    """'building', or 'carport_or_garage' for structures rooftop-only designs leave
+    out: tiny footprints, long narrow carport rows, or mapped as such."""
+    if (m.building_class or "") in _NON_ROOF_CLASSES:
+        return "carport_or_garage"
+    local = LocalFrame.for_geometry(m.footprint).to_local(m.footprint)
+    if local.area < min_area_m2:
+        return "carport_or_garage"
+    short, long_, _ = principal_axes(local)
+    if short < carport_width_m and long_ / max(short, 1e-6) > carport_aspect:
+        return "carport_or_garage"
+    return "building"
 
 
 def group_rows(outcomes: list["SiteOutcome"]) -> list[dict]:
@@ -239,7 +265,8 @@ def size_sites(
     google_max_points: int = 9,
     unit_addresses=None,
     parcels=None,
-    max_parcel_buildings: int = 40,
+    max_parcel_buildings: int = 120,
+    include_carports: bool = False,
 ) -> list[SiteOutcome]:
     outcomes = [SiteOutcome(s) for s in sites]
 
@@ -289,6 +316,11 @@ def size_sites(
         on_parcel = footprints.in_polygons(areas) if areas else {}
         for sid, ms in on_parcel.items():
             o = next(x for x in outcomes if x.site.id == sid)
+            if not include_carports:
+                kept = [m for m in ms if structure_kind(m) == "building"]
+                if len(kept) < len(ms):
+                    o.reasons.append(f"skipped_{len(ms) - len(kept)}_carport_or_garage_structures")
+                ms = kept
             if not ms:
                 o.reasons.append("no_mapped_buildings_on_parcel")
                 continue
@@ -370,4 +402,14 @@ def size_sites(
     results = estimate_many([b for _o, b in jobs], geometric, google_client, calibrator, policy, workers, google_max_points)
     for (o, _b), est in zip(jobs, results):
         o.estimates.append(est)
+    for o in outcomes:
+        o.counted = [True] * len(o.estimates)
+        if o.site.id not in parcel_sites or len(o.estimates) < 2:
+            continue
+        with_google = [e.method == "google_filtered" for e in o.estimates]
+        if any(with_google) and not all(with_google):
+            # Outline-only sizing ignores rooftop equipment and runs ~2-3x high; on a
+            # parcel Google otherwise covers, such structures are reported, not counted.
+            o.counted = with_google
+            o.reasons.append(f"not_counted_{with_google.count(False)}_buildings_without_google_data")
     return outcomes
