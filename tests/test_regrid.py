@@ -113,3 +113,27 @@ def test_saved_regrid_token_is_used_by_cli(tmp_path, footprints, monkeypatch):
     with out.open() as f:
         row = next(csv.DictReader(f))
     assert row["parcel_id"] == "123-456-0" and row["buildings"] == "2"
+
+
+def test_parcel_lookup_retries_after_timeout(tmp_path, monkeypatch):
+    calls = []
+    data = _v2_response(box(0, -50, 60, 50))
+
+    def flaky(self, url, params=None, timeout=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise regrid_mod.requests.Timeout()
+        return _Resp(200, data)
+
+    monkeypatch.setattr(regrid_mod.requests.Session, "get", flaky)
+    monkeypatch.setattr(regrid_mod.time, "sleep", lambda s: None)
+    lon, lat = ll(30, 0)
+    assert RegridClient("t", cache_dir=tmp_path).parcel_at(lat, lon).parcel_id == "123-456-0"
+    assert len(calls) == 2
+
+    def always_slow(self, url, params=None, timeout=None):
+        raise regrid_mod.requests.Timeout()
+
+    monkeypatch.setattr(regrid_mod.requests.Session, "get", always_slow)
+    with pytest.raises(RegridError, match="timeout"):
+        RegridClient("t", cache_dir=tmp_path / "x").parcel_at(lat + 1, lon)

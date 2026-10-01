@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,11 +67,28 @@ class RegridError(RuntimeError):
 
 class RegridClient:
     def __init__(self, token: str, cache_dir: str | Path | None = Path.home() / ".rooftop-solar" / "regrid_cache",
-                 timeout: float = 30.0):
+                 timeout: float = 60.0, retries: int = 2):
         self.token = token
+        self.retries = retries
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.timeout = timeout
         self.session = requests.Session()
+
+    def _get(self, params: dict):
+        """GET with retries: Regrid's point lookup sometimes takes over 30 s."""
+        delay = 2.0
+        for attempt in range(self.retries + 1):
+            try:
+                resp = self.session.get(API_V2_POINT, params=params, timeout=self.timeout)
+            except (requests.Timeout, requests.ConnectionError):
+                if attempt == self.retries:
+                    raise RegridError("timeout") from None
+            else:
+                if resp.status_code not in (429, 500, 502, 503, 504) or attempt == self.retries:
+                    return resp
+            time.sleep(delay)
+            delay *= 2
+        raise RegridError("timeout")  # not reached
 
     def parcel_at(self, lat: float, lon: float) -> Parcel:
         """The parcel containing the point (or the nearest one Regrid returns)."""
@@ -79,11 +97,7 @@ class RegridClient:
         if path and path.exists():
             data = json.loads(path.read_text())
         else:
-            resp = self.session.get(
-                API_V2_POINT,
-                params={"lat": f"{lat:.7f}", "lon": f"{lon:.7f}", "token": self.token},
-                timeout=self.timeout,
-            )
+            resp = self._get({"lat": f"{lat:.7f}", "lon": f"{lon:.7f}", "token": self.token})
             if resp.status_code != 200:
                 raise RegridError(f"http_{resp.status_code}")
             data = resp.json()

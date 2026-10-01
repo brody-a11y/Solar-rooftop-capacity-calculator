@@ -117,8 +117,16 @@ class SiteOutcome:
     def row(self) -> dict:
         g = self.geocode
         reasons = list(self.reasons)
+        disagree = 0
         for b, e in zip(self.buildings, self.estimates):
-            reasons.extend(r for r in e.reasons if r not in reasons)
+            for r in e.reasons:
+                if r.startswith("methods_disagree_ratio_"):
+                    disagree += 1
+                elif r not in reasons:
+                    reasons.append(r)
+        if disagree:  # one line, not one per building
+            only = next(r for e in self.estimates for r in e.reasons if r.startswith("methods_disagree_ratio_"))
+            reasons.append(only if disagree == 1 and len(self.estimates) == 1 else f"methods_disagree_on_{disagree}_of_{len(self.estimates)}_buildings")
         return {
             "site_id": self.site.id,
             "group": self.site.group,
