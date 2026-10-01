@@ -179,3 +179,66 @@ def test_outline_only_buildings_not_counted_when_google_covers_parcel(footprints
     row = out.row()
     assert row["dc_kw"] == pytest.approx(sum(e.dc_kw for e, c in zip(out.estimates, out.counted) if c), abs=0.01)
     assert row["uncounted_buildings_kw"] > 0
+
+
+def _dataset_with_carports(tmp_path):
+    import pyarrow as pa
+    import pyarrow.fs as pafs
+    import pyarrow.parquet as pq
+    from rooftop_solar.sources.overture import OvertureFootprints
+
+    shapes = [("apt", box(0, 0, 40, 15)), ("carport-sun", box(0, 30, 60, 36)), ("carport-shade", box(0, 50, 60, 56))]
+    rows = {k: [] for k in ("id", "geometry", "bbox", "height", "num_floors", "class", "subtype", "roof_shape")}
+    for bid, b in shapes:
+        g = FRAME.to_lonlat(b)
+        x0, y0, x1, y1 = g.bounds
+        for k, v in (("id", bid), ("geometry", g.wkb), ("bbox", {"xmin": x0, "xmax": x1, "ymin": y0, "ymax": y1}),
+                     ("height", None), ("num_floors", None), ("class", None), ("subtype", None), ("roof_shape", None)):
+            rows[k].append(v)
+    d = tmp_path / "b"
+    d.mkdir()
+    pq.write_table(pa.table(rows), d / "part-0.parquet")
+    return OvertureFootprints(cache_dir=tmp_path / "c", release="t", filesystem=pafs.LocalFileSystem(), base_path=str(d))
+
+
+def test_unshaded_carports_counted_separately_shaded_ones_not(tmp_path):
+    from rooftop_solar.sources.google_solar import GoogleSolarClient
+
+    fp = _dataset_with_carports(tmp_path)
+
+    class Parcels:
+        def parcel_at(self, lat, lon):
+            return regrid_mod._parcel(_v2_response(box(-5, -5, 65, 60))["parcels"]["features"][0])
+
+    class Client(GoogleSolarClient):
+        """A row of flat panels along whichever structure the point falls on."""
+
+        def __init__(self):
+            pass
+
+        def building_insights(self, lat, lon, required_quality="MEDIUM"):
+            x, y = FRAME.point_to_local(lon, lat)
+            name, y0, kwh = ("apt", 7.5, 600.0) if y < 20 else ("sun", 33.0, 580.0) if y < 45 else ("shade", 53.0, 300.0)
+            panels = []
+            for i in range(14):
+                plon, plat = FRAME.point_to_lonlat(4 + i * 2.0, y0)
+                panels.append({"center": {"latitude": plat, "longitude": plon}, "orientation": "LANDSCAPE",
+                               "segmentIndex": 0, "yearlyEnergyDcKwh": kwh})
+            clon, clat = FRAME.point_to_lonlat(18, y0)
+            return {"name": f"buildings/{name}", "center": {"latitude": clat, "longitude": clon}, "imageryQuality": "HIGH",
+                    "imageryDate": {"year": 2025, "month": 1, "day": 1},
+                    "solarPotential": {"maxArrayPanelsCount": 14, "panelCapacityWatts": 400, "panelHeightMeters": 1.879,
+                                       "panelWidthMeters": 1.045, "roofSegmentStats": [{"pitchDegrees": 1, "azimuthDegrees": 180}],
+                                       "solarPanels": panels}}
+
+    from rooftop_solar import DesignConfig, Racking
+
+    lon, lat = ll(20, 7)
+    out = size_sites([Site("Oak", lat=lat, lon=lon)], fp, GeometricEstimator(design=DesignConfig(flat_racking=Racking.FLUSH)),
+                     google_client=Client(), workers=1, progress=lambda *_: None, parcels=Parcels())[0]
+    assert sorted(b.structure for b in out.buildings) == ["building", "carport_or_garage", "carport_or_garage"]
+    row = out.row()
+    assert row["rooftop_kw"] > 0 and row["carport_kw"] > 0
+    assert "not_counted_1_shaded_carports" in out.reasons
+    assert row["dc_kw"] == pytest.approx(row["rooftop_kw"] + row["carport_kw"], abs=0.05)
+    assert len(out.rooftop_estimates()) == 1

@@ -301,6 +301,7 @@ class GoogleFilteredEstimator:
         all_surface_m2 = all_flat_m2 = 0.0  # every Google panel, ignoring the code zone
         poleward_m2 = 0.0  # pitched panels facing away from the sun (north in the US)
         low_yield_m2 = 0.0  # panels producing well below the building's best ones
+        kept_kwh: list[float] = []
         best_kwh = max((p.yearly_kwh for p in insights.panels), default=0.0)
         min_kwh = design.min_panel_energy_ratio * best_kwh
         kinds = set()
@@ -322,6 +323,7 @@ class GoogleFilteredEstimator:
                 low_yield_m2 += across * down
                 continue
             kept.append(rect)
+            kept_kwh.append(p.yearly_kwh)
             area = across * down
             kept_surface_m2 += area
             kinds.add("flat" if is_flat else "pitched")
@@ -365,6 +367,8 @@ class GoogleFilteredEstimator:
                 "google_buildings_merged": insights.buildings_merged,
                 "poleward_face_kw": round(int(poleward_m2 // design.module.area_m2) * design.module.watts_dc / 1000.0, 1),
                 "poleward_faces_excluded": design.exclude_poleward_faces,
+                "best_panel_kwh": max(kept_kwh, default=0.0),
+                "median_panel_kwh": sorted(kept_kwh)[len(kept_kwh) // 2] if kept_kwh else 0.0,
                 "low_yield_kw": round(int(low_yield_m2 // design.module.area_m2) * design.module.watts_dc / 1000.0, 1),
                 "imagery_quality": insights.imagery_quality,
                 "imagery_date": insights.imagery_date,

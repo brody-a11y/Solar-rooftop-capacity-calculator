@@ -64,6 +64,7 @@ class Building:
     # geometric estimate is an upper bound until calibrated.
     obstructions_mapped: bool = False
     parapet_height_m: float = 0.0
+    structure: str = "building"  # or "carport_or_garage"
 
 
 @dataclass

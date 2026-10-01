@@ -144,7 +144,7 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
         sites, footprints, geometric, geocoder, client, calibrator, ReviewPolicy(),
         search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
         google_max_points=args.google_max_points, unit_addresses=_unit_addresses(args, sites),
-        parcels=_parcels(args), include_carports=args.include_carports,
+        parcels=_parcels(args), include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio,
     )
     site_rows = [o.row() for o in outcomes]
     _write_csv(site_rows, args.out, "site_id")
@@ -182,7 +182,7 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
             sites, footprints, geo, geocoder, client, calibrator, ReviewPolicy(),
             search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
             google_max_points=args.google_max_points, unit_addresses=units, parcels=parcels,
-            include_carports=args.include_carports, progress=lambda *_: None,
+            include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio, progress=lambda *_: None,
         )
         return outcomes, compare(truth, outcomes, geo.design.module.watts_dc)
 
@@ -272,8 +272,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="drop Google panels producing less than this fraction of the building's best panel")
     design.add_argument("--min-modules-per-structure", type=int, default=6,
                         help="structures that fit fewer modules than this in total are not designed")
-    design.add_argument("--include-carports", action="store_true",
-                        help="on parcels, also size carport rows, garages and tiny structures")
+    design.add_argument("--no-carports", action="store_true",
+                        help="on parcels, skip carport rows and garages entirely")
+    design.add_argument("--carport-min-energy-ratio", type=float, default=0.8,
+                        help="count a carport only if its typical panel yields at least this fraction of the best roof panel")
     design.add_argument("--no-parcels", action="store_true", help="don't use Regrid parcel boundaries")
     design.add_argument("--regrid-token-file", default="~/.rooftop-solar/regrid_token",
                         help="file holding a Regrid API token (or set REGRID_TOKEN)")

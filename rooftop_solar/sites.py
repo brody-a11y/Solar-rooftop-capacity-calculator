@@ -115,6 +115,14 @@ class SiteOutcome:
         flags = self.counted or [True] * len(self.estimates)
         return [e for e, c in zip(self.estimates, flags) if c]
 
+    def _triples(self):
+        flags = self.counted or [True] * len(self.estimates)
+        return list(zip(self.buildings, self.estimates, flags))
+
+    def rooftop_estimates(self):
+        """Counted estimates on buildings only (no carports or garages)."""
+        return [e for b, e, c in self._triples() if c and b.structure == "building"]
+
     @property
     def dc_kw(self) -> float:
         return sum(e.dc_kw for e in self._counted())
@@ -148,6 +156,8 @@ class SiteOutcome:
             "module_count": sum(e.primary.module_count for e in self._counted() if e.primary),
             "north_faces_kw_not_counted": round(sum(e.google.details.get("poleward_face_kw", 0) for e in self._counted()
                                                     if e.google and e.google.details.get("poleward_faces_excluded")), 1),
+            "rooftop_kw": round(sum(e.dc_kw for b, e, c in self._triples() if c and b.structure == "building"), 2),
+            "carport_kw": round(sum(e.dc_kw for b, e, c in self._triples() if c and b.structure != "building"), 2),
             "low_yield_kw_not_counted": round(sum(e.google.details.get("low_yield_kw", 0) for e in self._counted() if e.google), 1),
             "uncounted_buildings_kw": round(sum(e.dc_kw for e in self.estimates) - self.dc_kw, 1),
             "roof_area_m2": round(sum(e.primary.gross_roof_area_m2 for e in self._counted() if e.primary), 1),
@@ -161,6 +171,7 @@ class SiteOutcome:
         for b, m, e, c in zip(self.buildings, self.matches, self.estimates, flags):
             r = {"site_id": self.site.id, "counted": c, **e.row(b.occupancy.value)}
             r.update(
+                structure=b.structure,
                 overture_id=m.overture_id,
                 overture_class=m.building_class or "",
                 occupancy=b.occupancy.value,
@@ -266,7 +277,8 @@ def size_sites(
     unit_addresses=None,
     parcels=None,
     max_parcel_buildings: int = 120,
-    include_carports: bool = False,
+    include_carports: bool = True,
+    carport_min_energy_ratio: float = 0.8,
 ) -> list[SiteOutcome]:
     outcomes = [SiteOutcome(s) for s in sites]
 
@@ -392,7 +404,8 @@ def size_sites(
                 if "occupancy_assumed_multifamily" not in o.reasons:
                     o.reasons.append("occupancy_assumed_multifamily")
             bid = o.site.id if len(o.matches) == 1 else f"{o.site.id} #{n + 1}"
-            o.buildings.append(Building(bid, m.footprint, occ))
+            kind = structure_kind(m) if o.site.id in parcel_sites else "building"
+            o.buildings.append(Building(bid, m.footprint, occ, structure=kind))
             if m.roof_shape and m.roof_shape not in ("flat",) and google_client is None:
                 o.reasons.append(f"mapped_roof_shape_{m.roof_shape}_but_sized_as_flat")
 
@@ -410,6 +423,24 @@ def size_sites(
         if any(with_google) and not all(with_google):
             # Outline-only sizing ignores rooftop equipment and runs ~2-3x high; on a
             # parcel Google otherwise covers, such structures are reported, not counted.
-            o.counted = with_google
+            o.counted = list(with_google)
             o.reasons.append(f"not_counted_{with_google.count(False)}_buildings_without_google_data")
+        # Carports and garages count only when Google sized them (so shading is known)
+        # and their typical panel yields >= carport_min_energy_ratio of the best roof panel.
+        best = max((e.google.details.get("best_panel_kwh", 0.0) for b, e in zip(o.buildings, o.estimates)
+                    if e.google and b.structure == "building"), default=0.0)
+        shaded = no_data = 0
+        for i, (b, e) in enumerate(zip(o.buildings, o.estimates)):
+            if b.structure == "building" or not o.counted[i]:
+                continue
+            if e.method != "google_filtered":
+                o.counted[i] = False
+                no_data += 1
+            elif best and e.google.details.get("median_panel_kwh", 0.0) < carport_min_energy_ratio * best:
+                o.counted[i] = False
+                shaded += 1
+        if shaded:
+            o.reasons.append(f"not_counted_{shaded}_shaded_carports")
+        if no_data and not any("without_google_data" in r for r in o.reasons):
+            o.reasons.append(f"not_counted_{no_data}_carports_without_google_data")
     return outcomes
