@@ -207,13 +207,20 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
     footprints, parcels, units = OvertureFootprints(workers=args.workers), _parcels(args), _unit_addresses(args, sites)
     equipment = _equipment(args)
 
+    first = [True]
+
     def run(ratio: float):
+        # Progress on the first pass (the slow one: lookups); later cutoffs reuse the caches.
+        progress = (lambda msg: print(msg, flush=True)) if first[0] else (lambda *_: None)
+        if not first[0]:
+            print(f"Re-sizing at panel-yield cutoff {ratio:g}...", flush=True)
+        first[0] = False
         geo = GeometricEstimator(geometric.rules, dataclasses.replace(geometric.design, min_panel_energy_ratio=ratio))
         outcomes = size_sites(
             sites, footprints, geo, geocoder, client, calibrator, ReviewPolicy(),
             search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
             google_max_points=args.google_max_points, unit_addresses=units, parcels=parcels,
-            include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio, progress=lambda *_: None,
+            include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio, progress=progress,
             equipment_client=equipment,
         )
         return outcomes, compare(truth, outcomes, geo.design.module.watts_dc)

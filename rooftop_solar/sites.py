@@ -503,7 +503,7 @@ def size_sites(
 
     # 3. sizing
     jobs = [(o, b) for o in outcomes for b in o.buildings]
-    progress(f"Sizing {len(jobs)} buildings...")
+    progress(f"Sizing {len(jobs)} buildings (Google lookups first; uncached ones take a few seconds each)...")
     results = estimate_many([b for _o, b in jobs], geometric, google_client, calibrator, policy, workers, google_max_points,
                             equipment_client)
     for (o, _b), est in zip(jobs, results):
