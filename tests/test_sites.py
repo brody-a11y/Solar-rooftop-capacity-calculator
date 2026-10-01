@@ -226,3 +226,25 @@ def test_imagery_concerns_flag_stale_or_sparse_google_data():
     assert "imagery_may_predate_building" in imagery_concerns(outcome(16, 37, "2023-05-01"), 6, 0.5, today)[0]
     assert imagery_concerns(outcome(90, 100, "2018-03-01"), 6, 0.5, today) == ["google_imagery_2018-03-01_9_years_old"]
     assert imagery_concerns(SiteOutcome(Site("s", "")), 6, 0.5, today) == ["no_building_found"]
+
+
+def test_imagery_age_uses_date_behind_most_kw_and_match_doubts_flag():
+    from datetime import date
+
+    from rooftop_solar import Building
+    from rooftop_solar.models import SizingResult
+    from rooftop_solar.pipeline import SiteEstimate
+    from rooftop_solar.sites import Site, SiteOutcome, imagery_concerns
+    from .helpers import centered_box_ft
+
+    def est(kw, imagery):
+        goo = SizingResult("b", "google_filtered", kw, int(kw * 2), 1, 1, "flat", details={"imagery_date": imagery})
+        geo = SizingResult("b", "geometric", kw * 1.5, 1, 1, 1, "flat")
+        return SiteEstimate("b", kw, kw, "google_filtered", 1, "none", None, False, primary=goo, geometric=geo, google=goo)
+
+    b = Building("b", centered_box_ft(100, 100), Occupancy.R2)
+    o = SiteOutcome(Site("s", ""), buildings=[b, b], estimates=[est(300, "2023-01-01"), est(10, "2009-01-01")], counted=[True, True])
+    today = date(2026, 10, 1)
+    assert imagery_concerns(o, 6, 0.25, today) == []  # the 2009 shed doesn't make the site stale
+    o.reasons.append("two_buildings_equally_close_check_match")
+    assert imagery_concerns(o, 6, 0.25, today) == ["building_match_uncertain"]

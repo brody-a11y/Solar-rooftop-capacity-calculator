@@ -297,7 +297,8 @@ def size_sites(
     include_carports: bool = True,
     carport_min_energy_ratio: float = 0.8,
     stale_imagery_years: float = 6.0,
-    min_imagery_coverage: float = 0.5,
+    min_imagery_coverage: float = 0.25,
+    outline_only_factor: float = 0.55,
     today: date | None = None,
 ) -> list[SiteOutcome]:
     outcomes = [SiteOutcome(s) for s in sites]
@@ -441,10 +442,15 @@ def size_sites(
             continue
         with_google = [e.method == "google_filtered" for e in o.estimates]
         if any(with_google) and not all(with_google):
-            # Outline-only sizing ignores rooftop equipment and runs ~2-3x high; on a
-            # parcel Google otherwise covers, such structures are reported, not counted.
-            o.counted = list(with_google)
-            o.reasons.append(f"not_counted_{with_google.count(False)}_buildings_without_google_data")
+            # On a parcel Google otherwise covers, structures without Google data are
+            # usually garages or sheds: reported, not counted. Unless they hold most of
+            # the roof area (1.5x Google's), in which case Google missed the main buildings.
+            area = lambda want: sum(_area_m2(b) for b, g in zip(o.buildings, with_google) if g == want)
+            if area(False) > 1.5 * area(True):
+                o.reasons.append(f"counted_{with_google.count(False)}_buildings_without_google_data_from_outlines")
+            else:
+                o.counted = list(with_google)
+                o.reasons.append(f"not_counted_{with_google.count(False)}_buildings_without_google_data")
         # Carports and garages count only when Google sized them (so shading is known)
         # and their typical panel yields >= carport_min_energy_ratio of the best roof panel.
         best = max((e.google.details.get("best_panel_kwh", 0.0) for b, e in zip(o.buildings, o.estimates)
@@ -463,35 +469,57 @@ def size_sites(
             o.reasons.append(f"not_counted_{shaded}_shaded_carports")
         if no_data and not any("without_google_data" in r for r in o.reasons):
             o.reasons.append(f"not_counted_{no_data}_carports_without_google_data")
+    # Outline-only sizing ignores rooftop equipment. Scale it by the typical ratio of
+    # Google-filtered to outline-only kW (median 0.57 over 45 test sites, Oct 2026).
+    for o in outcomes:
+        for b, e, c in o._triples():
+            if c and e.method == "geometric" and e.primary and outline_only_factor != 1.0:
+                e.dc_kw *= outline_only_factor
+                e.reasons.append(f"outline_only_scaled_{outline_only_factor:g}")
     for o in outcomes:
         o.manual_review = imagery_concerns(o, stale_imagery_years, min_imagery_coverage, today or date.today())
     return outcomes
+
+
+def _area_m2(b: Building) -> float:
+    return LocalFrame.for_geometry(b.footprint).to_local(b.footprint).area
 
 
 def imagery_concerns(o: SiteOutcome, stale_years: float, min_coverage: float, today: date) -> list[str]:
     """Reasons the site total can't be trusted without a look at current imagery.
 
     Kept narrow on purpose (it should catch a few percent of sites, not most):
-    - no building found, or none with Google data (sized from outlines only);
+    - no building found, an uncertain building match, or most of the roof sized
+      from outlines only (no Google data);
     - Google panels cover under min_coverage of what the footprints hold: usually
       imagery taken before the building or its roof was finished;
-    - Google imagery older than stale_years.
+    - the imagery behind most of the kW is older than stale_years.
     """
     if not o.buildings:
         return ["no_building_found"]
+    out = []
+    if any(r.startswith(("two_buildings_equally_close", "address_point_")) for r in o.reasons):
+        out.append("building_match_uncertain")
     counted = [(b, e) for b, e, c in o._triples() if c]
     with_google = [(b, e) for b, e in counted if e.google]
     if not with_google:
-        return ["no_google_imagery_sized_from_outline"]
-    out = []
+        return out + ["no_google_imagery_sized_from_outline"]
+    no_google_m2 = sum(_area_m2(b) for b, e in counted if not e.google)
+    if no_google_m2 > 1.5 * sum(_area_m2(b) for b, _e in with_google):
+        out.append("most_roof_area_sized_from_outlines")
     goo = sum(e.google.dc_kw for _b, e in with_google)
     geo = sum(e.geometric.dc_kw for _b, e in with_google if e.geometric)
     if geo > 0 and goo < min_coverage * geo:
         out.append(f"google_sees_{goo / geo:.0%}_of_footprint_capacity_imagery_may_predate_building")
-    dates = [e.google.details.get("imagery_date", "") for _b, e in with_google]
-    years = [int(d[:4]) + (int(d[5:7]) - 1) / 12 for d in dates if d and d[:4].isdigit() and int(d[:4]) > 0]
-    if years:
-        age = today.year + (today.month - 1) / 12 - min(years)
+    # Age of the imagery behind most of the kW, not the oldest shed on the parcel.
+    by_date: dict[str, float] = {}
+    for _b, e in with_google:
+        d = e.google.details.get("imagery_date", "")
+        if d and d[:4].isdigit() and int(d[:4]) > 0:
+            by_date[d] = by_date.get(d, 0.0) + e.google.dc_kw
+    if by_date:
+        d = max(by_date, key=by_date.get)
+        age = today.year + (today.month - 1) / 12 - (int(d[:4]) + (int(d[5:7]) - 1) / 12)
         if age > stale_years:
-            out.append(f"google_imagery_{min(dates)}_{age:.0f}_years_old")
+            out.append(f"google_imagery_{d}_{age:.0f}_years_old")
     return out

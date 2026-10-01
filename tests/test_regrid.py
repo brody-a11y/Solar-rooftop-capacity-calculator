@@ -242,3 +242,34 @@ def test_unshaded_carports_counted_separately_shaded_ones_not(tmp_path):
     assert "not_counted_1_shaded_carports" in out.reasons
     assert row["dc_kw"] == pytest.approx(row["rooftop_kw"] + row["carport_kw"], abs=0.05)
     assert len(out.rooftop_estimates()) == 1
+
+
+def test_outline_only_main_building_counted_scaled_and_flagged(footprints):
+    """Google knows only a small building; the big one (most of the roof) is sized from its outline."""
+    from rooftop_solar.sources.google_solar import GoogleSolarClient
+    from .test_accuracy import _fake_insights
+
+    class Parcels:
+        def parcel_at(self, lat, lon):
+            return regrid_mod._parcel(_v2_response(box(-10, -10, 250, 20))["parcels"]["features"][0])  # warehouse + apt-a
+
+    class Client(GoogleSolarClient):
+        def __init__(self):
+            pass
+
+        def building_insights(self, lat, lon, required_quality="MEDIUM"):
+            x, _y = FRAME.point_to_local(lon, lat)
+            if x < 100:  # nothing for the warehouse
+                resp = regrid_mod.requests.Response()
+                resp.status_code = 404
+                raise regrid_mod.requests.HTTPError(response=resp)
+            clon, clat = FRAME.point_to_lonlat(220, 7)
+            return _fake_insights(clat, clon)
+
+    lon, lat = ll(220, 7)
+    out = size_sites([Site("Mall", lat=lat, lon=lon)], footprints, GeometricEstimator(), google_client=Client(),
+                     workers=1, progress=lambda *_: None, parcels=Parcels())[0]
+    assert out.counted == [True, True]
+    wh = next(e for b, e in zip(out.buildings, out.estimates) if b.id.endswith("warehouse") or e.method == "geometric")
+    assert wh.dc_kw == pytest.approx(0.55 * wh.raw_kw)
+    assert "most_roof_area_sized_from_outlines" in out.manual_review
