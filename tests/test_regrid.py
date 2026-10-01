@@ -251,7 +251,7 @@ def test_outline_only_main_building_counted_scaled_and_flagged(footprints):
 
     class Parcels:
         def parcel_at(self, lat, lon):
-            return regrid_mod._parcel(_v2_response(box(-10, -10, 250, 20))["parcels"]["features"][0])  # warehouse + apt-a
+            return regrid_mod._parcel(_v2_response(box(-10, -10, 250, 25))["parcels"]["features"][0])  # warehouse (62%) + apt-a
 
     class Client(GoogleSolarClient):
         def __init__(self):
@@ -318,3 +318,28 @@ def test_unit_addresses_pull_in_same_owner_parcels_only(footprints):
     assert "added_1_buildings_from_1_more_parcels_same_owner" in out.reasons
     assert "skipped_1_parcels_other_owner_under_unit_addresses" in out.reasons
     assert parcels.calls == 3  # site parcel + apt-b + store, not one per unit
+
+
+def test_zip_filled_from_parcel_and_units_counted(footprints):
+    """Address without ZIP: the unit lookup gets the parcel's ZIP; units are reported."""
+    seen = []
+
+    class Units:
+        def address_records(self, address):
+            seen.append(address)
+            lon, lat = FRAME.point_to_lonlat(220, 7)
+            return [{"number": "1", "unit": u, "lat": lat, "lon": lon} for u in ("101", "102", "103")]
+
+    class Parcels:
+        def parcel_at(self, lat, lon):
+            f = _v2_response(box(190, -10, 250, 22))["parcels"]["features"][0]
+            f["properties"]["fields"].update(szip5="90012", numunits="48")
+            return regrid_mod._parcel(f)
+
+    lon, lat = ll(220, 7)
+    out = size_sites([Site("Oak", address="1 Oak St, Los Angeles, CA", lat=lat, lon=lon)], footprints,
+                     GeometricEstimator(), workers=1, progress=lambda *_: None, parcels=Parcels(), unit_addresses=Units())[0]
+    assert seen == ["1 Oak St, Los Angeles, CA 90012"]
+    row = out.row()
+    assert row["units_in_address_data"] == 3 and row["units_in_parcel_records"] == 48
+    assert "zip_90012_added_for_unit_lookup" in out.reasons

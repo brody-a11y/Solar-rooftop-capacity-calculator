@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import math
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
@@ -115,6 +116,8 @@ class SiteOutcome:
     parcel: object | None = None  # regrid.Parcel when parcel lookup succeeded
     counted: list[bool] = field(default_factory=list)  # per estimate: included in the site total
     manual_review: list[str] = field(default_factory=list)  # low-confidence reasons a person should look at
+    listed_units: int | None = None  # unit address records found for the site's address
+    parcel_units: int | None = None  # units in the county parcel records (Regrid), where recorded
 
     def _counted(self):
         flags = self.counted or [True] * len(self.estimates)
@@ -167,6 +170,8 @@ class SiteOutcome:
             "parcel_id": getattr(self.parcel, "parcel_id", ""),
             "parcel_acres": getattr(self.parcel, "acres", "") or "",
             "buildings": len(self.buildings),
+            "units_in_address_data": self.listed_units or "",
+            "units_in_parcel_records": self.parcel_units or "",
             "dc_kw": round(self.dc_kw, 2),
             "raw_kw": round(sum(e.raw_kw for e in self._counted()), 2),
             "module_count": sum(e.primary.module_count for e in self._counted() if e.primary),
@@ -371,17 +376,38 @@ def size_sites(
             parcel_sites.add(sid)
             o.reasons.append(f"parcel_{o.parcel.parcel_id or 'unknown'}_{len(ms)}_buildings")
 
+    # Unit address points for each site. Input addresses often lack a ZIP, which
+    # the address data is keyed on: take it from the geocoder's matched address
+    # or the parcel record.
+    site_units: dict[str, list[tuple[float, float]]] = {}
+    if unit_addresses is not None:
+        for o in outcomes:
+            addr = _address_with_zip(o)
+            if not addr:
+                continue
+            try:
+                if hasattr(unit_addresses, "address_records"):
+                    records = unit_addresses.address_records(addr)
+                    site_units[o.site.id] = sorted({(round(r["lat"], 6), round(r["lon"], 6)) for r in records})
+                    o.listed_units = len({(r.get("number"), r["unit"]) for r in records if r.get("unit")}) or None
+                else:
+                    site_units[o.site.id] = unit_addresses.unit_points(addr)
+            except Exception:  # unit points are a bonus; never fail the site over them
+                continue
+            if addr != o.site.address:
+                o.reasons.append(f"zip_{addr.rsplit(' ', 1)[-1]}_added_for_unit_lookup")
+    for o in outcomes:
+        if o.parcel is not None:
+            o.parcel_units = o.parcel.units
+
     # Complexes often span several parcels, one per building or phase. Follow the
     # site's unit address points onto neighbouring parcels and keep those with the
     # same owner (name or mailing address).
     if parcels is not None and unit_addresses is not None:
         for o in outcomes:
-            if o.site.id not in parcel_sites or not o.site.address:
+            if o.site.id not in parcel_sites:
                 continue
-            try:
-                pts = unit_addresses.unit_points(o.site.address)
-            except Exception:  # a bonus; never fail the site over it
-                pts = []
+            pts = site_units.get(o.site.id, [])
             seen = [o.parcel.geometry]
             extra_areas, lookups, other_owner = {}, 0, 0
             for lat, lon in pts:
@@ -395,6 +421,8 @@ def size_sites(
                 seen.append(p.geometry)
                 if same_owner(p, o.parcel):
                     extra_areas[f"{o.site.id}\x00{len(extra_areas)}"] = p.geometry
+                    if p.units:
+                        o.parcel_units = (o.parcel_units or 0) + p.units
                 else:
                     other_owner += 1
             if extra_areas:
@@ -414,12 +442,9 @@ def size_sites(
     if unit_addresses is not None and campus_m == 0:
         unit_pts: dict[str, tuple[float, float]] = {}
         for o in outcomes:
-            if not (o.geocode and o.site.address and found.get(o.site.id)) or o.site.id in parcel_sites:
+            if not (o.geocode and found.get(o.site.id)) or o.site.id in parcel_sites:
                 continue
-            try:
-                pts = unit_addresses.unit_points(o.site.address)
-            except Exception:  # unit points are a bonus; never fail the site over them
-                pts = []
+            pts = site_units.get(o.site.id, [])
             if len(pts) > 1:
                 for i, (lat, lon) in enumerate(pts):
                     unit_pts[f"{o.site.id}\x00{i}"] = (lon, lat)
@@ -526,6 +551,18 @@ def size_sites(
     for o in outcomes:
         o.manual_review = imagery_concerns(o, stale_imagery_years, min_imagery_coverage, today or date.today())
     return outcomes
+
+
+def _address_with_zip(o: SiteOutcome) -> str:
+    """The site address, with a ZIP appended from the geocoder or parcel when missing."""
+    addr = (o.site.address or "").strip()
+    if not addr or re.search(r"\b\d{5}(?:-\d{4})?\s*(?:,?\s*(?:USA|US|United States))?\s*$", addr):
+        return addr
+    for source in ((o.geocode.matched_address if o.geocode else ""), getattr(o.parcel, "zip_code", "")):
+        m = re.search(r"\b(\d{5})(?:-\d{4})?\b(?!.*\b\d{5}\b)", source or "")
+        if m:
+            return f"{addr} {m.group(1)}"
+    return addr
 
 
 def _area_m2(b: Building) -> float:

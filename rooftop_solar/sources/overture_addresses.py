@@ -195,6 +195,11 @@ class OvertureAddresses:
         (apartment units, building letters), or every number of a range such as
         "521-537 Edgewood Ave". Several distinct points usually mean a
         multi-building property."""
+        return sorted({(round(r["lat"], 6), round(r["lon"], 6)) for r in self.address_records(address)})
+
+    def address_records(self, address: str) -> list[dict]:
+        """Every address record behind unit_points: one per unit where the
+        county lists units, so len() is a unit count when units are listed."""
         parsed = parse_address(address)
         if not parsed:
             return []
@@ -215,4 +220,4 @@ class OvertureAddresses:
         top = max((sc for sc, _ in scored), default=0.0)
         if top == 0:
             return []
-        return sorted({(round(r["lat"], 6), round(r["lon"], 6)) for sc, r in scored if sc == top})
+        return [r for sc, r in scored if sc == top]

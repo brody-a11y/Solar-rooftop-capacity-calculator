@@ -31,6 +31,8 @@ class Parcel:
     owner: str
     acres: float | None
     mail_address: str = ""  # owner's mailing address, for matching owners across parcels
+    zip_code: str = ""  # situs (property) ZIP
+    units: int | None = None  # dwelling/unit count where the county records it
 
 
 _ENTITY_WORDS = {"LLC", "LP", "LLP", "INC", "CO", "CORP", "CORPORATION", "LTD", "THE", "OF", "A", "AN", "AND"}
@@ -80,7 +82,17 @@ def _parcel(feature: dict) -> Parcel | None:
         owner=str(fields.get("owner") or ""),
         acres=float(acres) if acres not in (None, "") else None,
         mail_address=" ".join(str(fields.get(k) or "") for k in ("mailadd", "mail_zip")).strip(),
+        zip_code=str(fields.get("szip5") or fields.get("szip") or "")[:5],
+        units=_int(fields.get("numunits") or fields.get("units")),
     )
+
+
+def _int(v) -> int | None:
+    try:
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
 
 
 class RegridError(RuntimeError):
