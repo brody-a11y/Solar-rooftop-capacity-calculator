@@ -68,6 +68,22 @@ def _setup(args: argparse.Namespace):
     return geometric, calibrator, client
 
 
+def _equipment_summary(outcomes) -> str:
+    """One line on the rooftop-equipment lookups, so failures show in the window."""
+    from collections import Counter
+
+    st = [e.equipment_status for o in outcomes for e in o.estimates if e.equipment_status]
+    if not st:
+        return ""
+    ok = [s for s in st if s.startswith("found_")]
+    failed = Counter(s.split(":", 1)[1] for s in st if s.startswith("failed:"))
+    line = (f"Rooftop equipment lookups: {len(ok)} roofs checked, {sum(int(s[6:]) for s in ok)} equipment items found"
+            f", {sum(failed.values())} failed")
+    if failed:
+        line += " (" + ", ".join(f"{k} x{v}" for k, v in failed.most_common(3)) + ")"
+    return line
+
+
 def _equipment(args: argparse.Namespace):
     """Rooftop-equipment detector (Google surface model), on by default with --google."""
     if not args.google or args.no_equipment_detection:
@@ -166,6 +182,8 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
     if args.layouts:
         write_layouts([e.primary for o in outcomes for e in o.estimates if e.primary], args.layouts)
     found = sum(1 for o in outcomes if o.buildings)
+    if _equipment_summary(outcomes):
+        print(_equipment_summary(outcomes))
     manual = [r for r in site_rows if r["manual_review"]]
     print(f"{len(sites)} sites: {found} matched to buildings -> {args.out}")
     print(f"{len(manual)} of {len(sites)} ({len(manual) / max(len(sites), 1):.0%}) need a manual look at current imagery "
@@ -223,6 +241,8 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
           " compared with the raised column only)")
     print()
     print(summary(rows))
+    if _equipment_summary(outcomes):
+        print("\n" + _equipment_summary(outcomes))
     if len(sweep) > 1:
         print("\nPanel-yield cutoff sweep (Google column):")
         print(f"{'cutoff':>7} {'within 10%':>11} {'median |err|':>13} {'median err':>11}")

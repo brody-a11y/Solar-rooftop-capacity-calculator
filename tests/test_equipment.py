@@ -99,3 +99,35 @@ def test_panels_kept_clear_of_condenser_field_and_raised_spans_it():
     assert 12 <= lost <= 28
     assert blocked.details["equipment_detected"] == 1 and blocked.details["equipment_clearance_kw"] > 0
     assert blocked.details["raised_racking_extra_modules"] >= 0.6 * lost
+
+
+def test_equipment_summary_line():
+    from types import SimpleNamespace as NS
+
+    from rooftop_solar.cli import _equipment_summary
+
+    est = lambda s: NS(equipment_status=s)
+    outs = [NS(estimates=[est("found_3"), est("failed:http_403"), est("")]), NS(estimates=[est("failed:http_403")])]
+    assert _equipment_summary(outs) == "Rooftop equipment lookups: 1 roofs checked, 3 equipment items found, 2 failed (http_403 x2)"
+    assert _equipment_summary([NS(estimates=[est("")])]) == ""
+
+
+def test_pipeline_records_equipment_status():
+    from rooftop_solar.pipeline import estimate_many
+    from rooftop_solar.sources.google_solar import GoogleSolarClient
+
+    b = Building("a", centered_box_ft(200, 100), Occupancy.R2)
+
+    class Client(GoogleSolarClient):
+        def __init__(self):
+            pass
+
+        def building_insights(self, lat, lon, required_quality="MEDIUM"):
+            return google_response()
+
+    class Equip:
+        def equipment(self, footprint):
+            return [FRAME.to_lonlat(box(-17, -2, -13, 2))]
+
+    est, = estimate_many([b], GeometricEstimator(), Client(), workers=1, equipment_client=Equip())
+    assert est.equipment_status == "found_1" and est.google.details["equipment_detected"] == 1

@@ -43,6 +43,7 @@ class SiteEstimate:
     primary: SizingResult | None = None
     geometric: SizingResult | None = None
     google: SizingResult | None = None
+    equipment_status: str = ""  # "", "found_N", or "failed:<reason>"
 
     def row(self, occupancy: str) -> dict:
         p = self.primary
@@ -149,6 +150,7 @@ def estimate_many(
         with ThreadPoolExecutor(max_workers=workers) as pool:
             list(pool.map(fetch, range(len(buildings))))
     notes: list[list[str]] = [[] for _ in buildings]
+    status: list[str] = [""] * len(buildings)
     if equipment_client:
         # Rooftop equipment from Google's surface model, only where Google put
         # panels on a flat roof (condenser fields are a flat-roof problem).
@@ -163,8 +165,10 @@ def estimate_many(
                 found = equipment_client.equipment(buildings[i].footprint)
             except Exception as exc:  # sizing goes ahead without it, flagged
                 code = getattr(getattr(exc, "response", None), "status_code", None)
-                notes[i].append(f"equipment_lookup_failed:{f'http_{code}' if code else type(exc).__name__}")
+                status[i] = f"failed:{f'http_{code}' if code else type(exc).__name__}"
+                notes[i].append(f"equipment_lookup_{status[i]}")
                 return
+            status[i] = f"found_{len(found)}"
             buildings[i] = replace(buildings[i], obstructions=buildings[i].obstructions
                                    + [Obstruction(g, "equipment") for g in found])
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -176,6 +180,7 @@ def estimate_many(
     else:
         with ProcessPoolExecutor(max_workers=procs) as pool:
             results = list(pool.map(_size_one, jobs, chunksize=max(1, len(jobs) // (procs * 4))))
-    for est, extra in zip(results, notes):
+    for est, extra, st in zip(results, notes, status):
         est.reasons.extend(extra)
+        est.equipment_status = st
     return results
