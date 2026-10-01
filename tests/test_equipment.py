@@ -131,3 +131,32 @@ def test_pipeline_records_equipment_status():
 
     est, = estimate_many([b], GeometricEstimator(), Client(), workers=1, equipment_client=Equip())
     assert est.equipment_status == "found_1" and est.google.details["equipment_detected"] == 1
+
+
+def test_read_geotiff_with_transformation_matrix():
+    import tifffile
+
+    buf = io.BytesIO()
+    m = (0.25, 0.0, 0.0, 500000.0, 0.0, -0.25, 0.0, 3760000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+    keys = (1, 1, 0, 1, 3072, 0, 1, 32611)
+    tifffile.imwrite(buf, np.zeros((4, 6), "float32"), extratags=[(34264, "d", 16, m), (34735, "H", len(keys), keys)])
+    arr, to_crs, epsg = read_geotiff(buf.getvalue())
+    assert epsg == 32611 and to_crs(2, 3) == (500000.5, 3760000.0 - 0.75)
+
+
+def test_dsm_client_retries_rate_limit(monkeypatch):
+    import rooftop_solar.sources.google_dsm as gd
+
+    class R:
+        def __init__(self, code):
+            self.status_code, self.content = code, b"tif"
+
+        def raise_for_status(self):
+            pass
+
+    codes = [429, 429, 200]
+    sleeps = []
+    monkeypatch.setattr(gd.time, "sleep", sleeps.append)
+    client = GoogleDSMClient("k", cache_dir=None)
+    client.session = type("S", (), {"get": lambda self, url, params=None, timeout=None: R(codes.pop(0))})()
+    assert client._get("u", {}).status_code == 200 and sleeps == [2.0, 4.0]

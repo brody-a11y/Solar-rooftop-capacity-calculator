@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -263,16 +264,17 @@ class GoogleSolarClient:
                 resp.status_code = data["_http_status"]
                 raise requests.HTTPError(f"{resp.status_code} (cached)", response=resp)
             return data
-        resp = self.session.get(
-            API_URL,
-            params={
-                "location.latitude": f"{lat:.7f}",
-                "location.longitude": f"{lon:.7f}",
-                "requiredQuality": required_quality,
-                "key": self.api_key,
-            },
-            timeout=self.timeout,
-        )
+        params = {
+            "location.latitude": f"{lat:.7f}",
+            "location.longitude": f"{lon:.7f}",
+            "requiredQuality": required_quality,
+            "key": self.api_key,
+        }
+        for attempt in range(6):  # back off when Google rate-limits (429) or errors (5xx)
+            resp = self.session.get(API_URL, params=params, timeout=self.timeout)
+            if resp.status_code not in (429, 500, 502, 503, 504) or attempt == 5:
+                break
+            time.sleep(min(60.0, 2.0 * 2 ** attempt))
         if resp.status_code == 404 and path:
             # Google has no building here; remember that so reruns don't ask again.
             path.parent.mkdir(parents=True, exist_ok=True)

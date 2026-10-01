@@ -8,6 +8,7 @@ two independent methods is what makes that routing possible.
 from __future__ import annotations
 
 import os
+import re
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 
@@ -174,13 +175,14 @@ def estimate_many(
                 found = equipment_client.equipment(buildings[i].footprint)
             except Exception as exc:  # sizing goes ahead without it, flagged
                 code = getattr(getattr(exc, "response", None), "status_code", None)
-                status[i] = f"failed:{f'http_{code}' if code else type(exc).__name__}"
+                detail = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(exc))[:40].strip("_")
+                status[i] = f"failed:{f'http_{code}' if code else type(exc).__name__ + (f'_{detail}' if detail else '')}"
                 notes[i].append(f"equipment_lookup_{status[i]}")
                 return
             status[i] = f"found_{len(found)}"
             buildings[i] = replace(buildings[i], obstructions=buildings[i].obstructions
                                    + [Obstruction(g, "equipment") for g in found])
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        with ThreadPoolExecutor(max_workers=min(workers, 4)) as pool:  # dataLayers rate-limits bursts
             list(pool.map(equip, range(len(buildings))))
     jobs = [(b, geometric, insights[i], errors[i], calibrator, policy) for i, b in enumerate(buildings)]
     procs = min(workers, os.cpu_count() or 1, len(jobs))

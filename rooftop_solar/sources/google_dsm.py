@@ -17,6 +17,7 @@ import hashlib
 import io
 import json
 import math
+import time
 from pathlib import Path
 
 import numpy as np
@@ -76,15 +77,23 @@ def read_geotiff(data: bytes):
         arr = page.asarray().astype("float64")
         if arr.ndim == 3:
             arr = arr[..., 0]
-        tags = page.tags
-        scale = tags["ModelPixelScaleTag"].value
-        tie = tags["ModelTiepointTag"].value
-        keys = tags["GeoKeyDirectoryTag"].value if "GeoKeyDirectoryTag" in tags else ()
-        nodata = tags["GDAL_NODATA"].value if "GDAL_NODATA" in tags else None
+        tags = {t.code: t.value for t in page.tags.values()}
+    # GeoTIFF georeferencing: tiepoint + pixel scale (33922/33550), or a full
+    # model transformation matrix (34264).
+    keys = tags.get(34735, ())
+    nodata = tags.get(42113)
     if nodata not in (None, ""):
         arr[arr == float(str(nodata).strip("\x00"))] = np.nan
-    i0, j0, x0, y0 = tie[0], tie[1], tie[3], tie[4]
-    sx, sy = scale[0], scale[1]
+    if 33922 in tags and 33550 in tags:
+        tie, scale = tags[33922], tags[33550]
+        i0, j0, x0, y0 = tie[0], tie[1], tie[3], tie[4]
+        sx, sy = scale[0], scale[1]
+        a, b, d, e, f, h = sx, 0.0, x0 - i0 * sx, 0.0, -sy, y0 + j0 * sy
+    elif 34264 in tags:
+        m = tags[34264]
+        a, b, d, e, f, h = m[0], m[1], m[3], m[4], m[5], m[7]
+    else:
+        raise ValueError(f"no_georeference_tags:{sorted(tags)[:12]}")
     epsg = None
     for n in range(4, len(keys), 4):  # GeoKey entries: id, location, count, value
         if keys[n] in (3072, 2048) and keys[n + 1] == 0:  # projected / geographic CRS code
@@ -93,7 +102,7 @@ def read_geotiff(data: bytes):
                 break
 
     def pixel_to_crs(col, row):
-        return x0 + (col - i0) * sx, y0 - (row - j0) * sy
+        return a * col + b * row + d, e * col + f * row + h
 
     return arr, pixel_to_crs, epsg or 4326
 
@@ -107,24 +116,31 @@ class GoogleDSMClient:
         self.timeout = timeout
         self.session = session or requests.Session()
 
+    def _get(self, url: str, params: dict) -> requests.Response:
+        """GET with backoff on rate limiting (429) and server errors."""
+        for attempt in range(6):
+            resp = self.session.get(url, params=params, timeout=self.timeout)
+            if resp.status_code not in (429, 500, 502, 503, 504) or attempt == 5:
+                resp.raise_for_status()
+                return resp
+            time.sleep(min(60.0, 2.0 * 2 ** attempt))
+        raise RuntimeError("unreachable")
+
     def _download(self, footprint: Polygon) -> bytes:
         c = footprint.centroid
         frame = LocalFrame.for_geometry(footprint)
         local = frame.to_local(footprint)
         cx, cy = frame.point_to_local(c.x, c.y)
         radius = max(math.hypot(x - cx, y - cy) for x, y in local.exterior.coords) + 3.0
-        resp = self.session.get(DATA_LAYERS_URL, params={
+        resp = self._get(DATA_LAYERS_URL, {
             "location.latitude": f"{c.y:.7f}", "location.longitude": f"{c.x:.7f}",
             "radiusMeters": f"{min(radius, 100.0):.0f}", "view": "DSM_LAYER",
             "requiredQuality": "MEDIUM", "pixelSizeMeters": f"{self.pixel_size_m:g}", "key": self.api_key,
-        }, timeout=self.timeout)
-        resp.raise_for_status()
+        })
         url = resp.json().get("dsmUrl")
         if not url:
             raise ValueError("no_dsm_in_response")
-        tif = self.session.get(url, params={"key": self.api_key}, timeout=self.timeout)
-        tif.raise_for_status()
-        return tif.content
+        return self._get(url, {"key": self.api_key}).content
 
     def equipment(self, footprint: Polygon, min_height_m: float = 0.3, max_size_m: float = 6.0) -> list[Polygon]:
         """Plan-view (lon/lat) outlines of rooftop equipment on this footprint."""
@@ -141,7 +157,8 @@ class GoogleDSMClient:
         import shapely
 
         roof = shapely.contains_xy(fp_crs, cx, cy)
-        pixel_m = abs(pixel_to_crs(1, 0)[0] - pixel_to_crs(0, 0)[0])
+        (x0, y0), (x1, y1) = pixel_to_crs(0, 0), pixel_to_crs(1, 0)
+        pixel_m = math.hypot(x1 - x0, y1 - y0)
         if epsg == 4326:  # degrees: convert to metres for the size thresholds
             pixel_m *= 111_320 * math.cos(math.radians(footprint.centroid.y))
         out = []

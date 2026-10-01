@@ -117,12 +117,22 @@ def summary(rows: list[dict], tolerance: float = 0.10) -> str:
     sized = [r for r in rows if r["tool_err"]]
     below = [r for r in sized if float(r["tool_err"].rstrip("%")) / 100 < -tolerance]
     caught = [r["site"] for r in below if r["manual_review"]]
-    missed = [r["site"] for r in below if not r["manual_review"]]
+    # The outline-only estimate ignores equipment, so it is an upper bound for the
+    # matched buildings. A design that doesn't fit even there was built on other
+    # buildings (wrong match, campus, typo in the source): not a sizing miss.
+    pct = lambda v: float(v.rstrip("%")) / 100 if v else None
+    mismatch = [r["site"] for r in below if not r["manual_review"]
+                and pct(r["footprint_only_err"]) is not None and pct(r["footprint_only_err"]) < -tolerance]
+    missed = [r["site"] for r in below if not r["manual_review"] and r["site"] not in mismatch]
     flagged = sum(1 for r in rows if r["manual_review"])
     lines.append(f"\nDesigns as lower bounds (all {len(sized)} sites incl. {len(sized) - len([r for r in sized if r['kind'] == 'maxfit'])} "
                  f"load-sized floors): {len(sized) - len(below)} at or above design (within -{tolerance:.0%})")
     lines.append(f"  below design, flagged for manual review: {', '.join(caught) or 'none'}")
-    lines.append(f"  below design, NOT flagged (the misses that matter): {', '.join(missed) or 'none'}")
+    lines.append(f"  below design, larger than the matched buildings' outline can hold (building match problem): "
+                 f"{', '.join(mismatch) or 'none'}")
+    errs = {r["site"]: r["tool_err"] for r in below}
+    lines.append(f"  below design, NOT flagged (the misses that matter): "
+                 f"{', '.join(f'{m} ({errs[m]})' for m in missed) or 'none'}")
     lines.append(f"Flagged for manual review: {flagged} of {len(rows)} sites")
     # Installed (or load-sized) systems against the tool's MaxFit: how much of the
     # roof typically gets built. Unflagged sites only.
