@@ -180,3 +180,17 @@ def test_low_yield_panels_dropped_by_energy_cutoff():
     cut = GoogleFilteredEstimator(GeometricEstimator(design=dataclasses.replace(flush, min_panel_energy_ratio=0.8))).estimate(b, ins)
     assert cut.module_count == pytest.approx(all_kept.module_count / 2, abs=2)
     assert cut.details["low_yield_kw"] > 0
+
+
+def test_energy_cutoff_uses_typical_panel_not_a_few_outliers():
+    b = Building("a", centered_box_ft(200, 100), Occupancy.COMMERCIAL)
+    resp = google_response()
+    panels = resp["solarPotential"]["solarPanels"]
+    for i, p in enumerate(panels):
+        p["yearlyEnergyDcKwh"] = 900.0 if i < 3 else 600.0  # three sunny outliers, the rest uniform
+    import dataclasses
+    flush = DesignConfig(flat_racking=Racking.FLUSH)
+    ins = GoogleInsights.from_response(resp)
+    base = GoogleFilteredEstimator(GeometricEstimator(design=flush)).estimate(b, ins)
+    cut = GoogleFilteredEstimator(GeometricEstimator(design=dataclasses.replace(flush, min_panel_energy_ratio=0.9))).estimate(b, ins)
+    assert cut.module_count == base.module_count  # uniform roof kept despite the outliers

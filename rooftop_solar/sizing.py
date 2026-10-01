@@ -39,7 +39,8 @@ class DesignConfig:
     exclude_poleward_faces: bool = True
     poleward_cone_deg: float = 45.0
     # Drop Google panels whose modelled yearly energy is below this fraction of the
-    # building's best panel (0 = keep all). Shaded or weak faces that designers skip.
+    # building's 90th-percentile panel (0 = keep all). Shaded or weak faces that
+    # designers skip.
     min_panel_energy_ratio: float = 0.0
     # Structures that can't take at least this many modules in total are not
     # designed (Ivy rule: 5 or fewer panels on a structure is never worth it).

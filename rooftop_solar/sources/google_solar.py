@@ -302,7 +302,11 @@ class GoogleFilteredEstimator:
         poleward_m2 = 0.0  # pitched panels facing away from the sun (north in the US)
         low_yield_m2 = 0.0  # panels producing well below the building's best ones
         kept_kwh: list[float] = []
-        best_kwh = max((p.yearly_kwh for p in insights.panels), default=0.0)
+        # Reference = 90th-percentile panel, not the single best: a few unusually
+        # sunny edge panels on a big flat roof would otherwise set the bar so high
+        # that most of a usable roof is dropped.
+        energies = sorted(p.yearly_kwh for p in insights.panels)
+        best_kwh = energies[int(0.9 * (len(energies) - 1))] if energies else 0.0
         min_kwh = design.min_panel_energy_ratio * best_kwh
         kinds = set()
         for p in insights.panels:

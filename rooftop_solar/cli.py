@@ -269,7 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
     design.add_argument("--include-north-faces", action="store_true",
                         help="keep Google panels on north-facing pitched roof faces (excluded by default)")
     design.add_argument("--min-panel-energy-ratio", type=float, default=0.0,
-                        help="drop Google panels producing less than this fraction of the building's best panel")
+                        help="drop Google panels producing less than this fraction of the building's 90th-percentile panel")
     design.add_argument("--min-modules-per-structure", type=int, default=6,
                         help="structures that fit fewer modules than this in total are not designed")
     design.add_argument("--no-carports", action="store_true",
@@ -317,7 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--geocoder", choices=["auto", "google"], default="auto")
     a.add_argument("--search-m", type=float, default=40.0)
     a.add_argument("--campus-radius-m", type=float, default=0.0)
-    a.add_argument("--energy-ratios", default="0,0.7,0.8,0.85,0.9",
+    a.add_argument("--energy-ratios", default="0,0.7,0.8,0.85,0.9,0.95",
                    help="comma-separated panel-yield cutoffs to compare (uses saved Google answers, no extra cost)")
     a.set_defaults(func=cmd_accuracy)
 
