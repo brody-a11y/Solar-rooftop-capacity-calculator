@@ -270,7 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="keep Google panels on north-facing pitched roof faces (excluded by default)")
     design.add_argument("--min-panel-energy-ratio", type=float, default=0.0,
                         help="drop Google panels producing less than this fraction of the building's best panel")
-    design.add_argument("--min-modules-per-structure", type=int, default=7,
+    design.add_argument("--min-modules-per-structure", type=int, default=6,
                         help="structures that fit fewer modules than this in total are not designed")
     design.add_argument("--include-carports", action="store_true",
                         help="on parcels, also size carport rows, garages and tiny structures")

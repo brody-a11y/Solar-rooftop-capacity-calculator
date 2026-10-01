@@ -101,12 +101,16 @@ def test_winter_profile_angle_reasonable():
     assert 1.134 * math.cos(math.radians(10)) < pitch < 1.6
 
 
-def test_structures_under_seven_modules_are_not_designed():
-    # ~6 m x 9 m roof: room for a handful of modules only
-    small = Building("shed", lonlat_box(0, 0, 9, 6), Occupancy.COMMERCIAL)
-    r = GeometricEstimator(design=DesignConfig(flat_racking=Racking.FLUSH, edge_setback_ft=0.0)).estimate(small)
-    assert r.module_count == 0 and r.dc_kw == 0
-    assert any(f.startswith("under_7_modules") for f in r.flags)
-    # the same rule switched off keeps them
-    r2 = GeometricEstimator(design=DesignConfig(flat_racking=Racking.FLUSH, min_modules_per_structure=0)).estimate(small)
-    assert 0 < r2.module_count < 7
+def test_structures_under_six_modules_are_not_designed():
+    flush = dict(flat_racking=Racking.FLUSH, min_modules_per_structure=0)
+    counts = {}
+    for w in range(6, 20):
+        b = Building("s", lonlat_box(0, 0, w, 6), Occupancy.COMMERCIAL)
+        counts[w] = GeometricEstimator(design=DesignConfig(**flush)).estimate(b).module_count
+    five = next(w for w, n in counts.items() if n == 5)
+    six = next(w for w, n in counts.items() if n == 6)
+    rule = DesignConfig(flat_racking=Racking.FLUSH)  # default threshold
+    r5 = GeometricEstimator(design=rule).estimate(Building("s", lonlat_box(0, 0, five, 6), Occupancy.COMMERCIAL))
+    r6 = GeometricEstimator(design=rule).estimate(Building("s", lonlat_box(0, 0, six, 6), Occupancy.COMMERCIAL))
+    assert r5.module_count == 0 and any(f.startswith("under_6_modules") for f in r5.flags)
+    assert r6.module_count == 6
