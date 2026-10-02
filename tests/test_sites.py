@@ -60,6 +60,9 @@ def test_read_sites_rejects_file_without_location_columns(tmp_path):
 
 
 class _Resp:
+    status_code = 200
+    text = ""
+
     def __init__(self, data):
         self.data = data
 
@@ -91,6 +94,24 @@ def test_census_and_google_geocoders_parse_and_cache(tmp_path, monkeypatch):
 
     g = Geocoder("google", api_key="k", cache_path=tmp_path / "g.json").geocode("1 Main St")
     assert (g.lat, g.lon, g.precision) == (34.2, -118.2, "rooftop")
+
+
+def test_google_geocoder_falls_back_to_free_sources_and_keeps_the_error(tmp_path, monkeypatch):
+    def fake_get(self, url, params=None, timeout=None):
+        if "census" in url:
+            return _Resp({"result": {"addressMatches": [{"coordinates": {"x": -118.1, "y": 34.1}, "matchedAddress": "1 MAIN ST"}]}})
+        return _Resp({"status": "REQUEST_DENIED", "error_message": "This API key is not authorized to use this service"})
+
+    monkeypatch.setattr(geocode_mod.requests.Session, "get", fake_get)
+
+    class NoOverture:
+        def lookup(self, address):
+            return None
+
+    g = Geocoder("google", api_key="k", cache_path=tmp_path / "g.json", addresses=NoOverture())
+    r = g.geocode("1 Main St, Town, CA 90001")
+    assert r.source == "census" and r.lat == 34.1
+    assert "REQUEST_DENIED" in g.google_errors[0] and "not authorized" in g.google_errors[0]
 
 
 def test_ambiguous_and_far_matches_are_flagged(footprints):

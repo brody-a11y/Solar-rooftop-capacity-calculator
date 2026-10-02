@@ -47,6 +47,7 @@ class Geocoder:
         self._lock = threading.Lock()
         self.session = requests.Session()
         self._addresses = addresses
+        self.google_errors: list[str] = []  # Google failures this run (the free sources were used instead)
 
     @property
     def addresses(self):
@@ -62,14 +63,24 @@ class Geocoder:
             if key in self._cache:
                 hit = self._cache[key]
                 return GeocodeResult(**hit) if hit else None
+        google_failed = False
         if self.provider == "google":
-            result = self._google(address)
+            try:
+                result = self._google(address)
+            except Exception as exc:  # quota, key or network problem: fall back to the free sources
+                with self._lock:
+                    self.google_errors.append(str(exc)[:200])
+                result, google_failed = None, True
+            if result is None:  # not found by Google (or Google failed): try Overture, then Census
+                result = self._overture(address) or self._census(address)
         elif self.provider == "census":
             result = self._census(address)
         else:
             result = self._overture(address)
             if result is None and self.provider == "auto":
                 result = self._census(address)
+        if result is None and google_failed:
+            return None  # don't remember "not found" when Google never answered; retry next run
         with self._lock:
             self._cache[key] = asdict(result) if result else None
         return result
@@ -101,7 +112,8 @@ class Geocoder:
 
     def _google(self, address: str) -> GeocodeResult | None:
         r = self.session.get(GOOGLE_URL, params={"address": address, "key": self.api_key}, timeout=self.timeout)
-        r.raise_for_status()
+        if r.status_code >= 400:
+            raise RuntimeError(f"Google geocoding HTTP {r.status_code}: {r.text[:150]}")
         data = r.json()
         if data.get("status") == "ZERO_RESULTS":
             return None

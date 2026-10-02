@@ -328,7 +328,8 @@ def size_sites(
         try:
             o.geocode = geocoder.geocode(s.address)
         except Exception as exc:  # one bad address must not stop a portfolio
-            o.reasons.append(f"geocode_error:{type(exc).__name__}")
+            detail = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(exc))[:60].strip("_")
+            o.reasons.append(f"geocode_error:{type(exc).__name__}" + (f"_{detail}" if detail else ""))
             return
         if o.geocode is None:
             o.reasons.append("address_not_found")
@@ -338,6 +339,17 @@ def size_sites(
         list(pool.map(locate, outcomes))
     if geocoder:
         geocoder.save()
+        from collections import Counter
+
+        found = Counter(o.geocode.source for o in outcomes if o.geocode)
+        missing = sum(1 for o in outcomes if not o.geocode)
+        line = f"Address lookup: {sum(found.values())} found ({', '.join(f'{k} {v}' for k, v in found.items()) or 'none'})"
+        line += f", {missing} not found" if missing else ""
+        errs = Counter(getattr(geocoder, "google_errors", []))
+        if errs:
+            msg, n = errs.most_common(1)[0]
+            line += f"\n  Google geocoding failed {sum(errs.values())} times; used free sources instead. Google said: {msg}"
+        progress(line)
 
     # 2. footprints
     located = {o.site.id: (o.geocode.lon, o.geocode.lat) for o in outcomes if o.geocode}
