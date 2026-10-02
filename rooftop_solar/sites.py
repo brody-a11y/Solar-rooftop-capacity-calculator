@@ -591,7 +591,9 @@ def imagery_concerns(o: SiteOutcome, stale_years: float, min_coverage: float, to
     no_google_m2 = sum(_area_m2(b) for b, e in counted if not e.google)
     if no_google_m2 > 1.5 * sum(_area_m2(b) for b, _e in with_google):
         out.append("most_roof_area_sized_from_outlines")
-    goo = sum(e.google.dc_kw for _b, e in with_google)
+    # Google's coverage before equipment clearance: a roof crowded with equipment
+    # is not a sign of imagery older than the building.
+    goo = sum(e.google.dc_kw + e.google.details.get("equipment_clearance_kw", 0) for _b, e in with_google)
     geo = sum(e.geometric.dc_kw for _b, e in with_google if e.geometric)
     if geo > 0 and goo < min_coverage * geo:
         out.append(f"google_sees_{goo / geo:.0%}_of_footprint_capacity_imagery_may_predate_building")
