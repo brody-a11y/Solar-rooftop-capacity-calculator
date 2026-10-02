@@ -44,6 +44,7 @@ def _setup(args: argparse.Namespace):
     """Estimator, calibrator and optional Google client from the shared design flags."""
     rules = FireCodeRules(
         section_gap_ft=args.section_gap_ft,
+        residential_setback_ft=args.pitched_setback_in / 12.0,
         residential_alternative_for_pitched_r2=not args.no_residential_alternative,
     )
     design = DesignConfig(
@@ -83,6 +84,29 @@ def _equipment_summary(outcomes) -> str:
     if failed:
         line += " (" + ", ".join(f"{k} x{v}" for k, v in failed.most_common(3)) + ")"
     return line
+
+
+def _snapshots(args: argparse.Namespace, outcomes) -> None:
+    """Satellite PNGs for the sites named in --snapshots (name parts, ';'-separated)."""
+    wanted = [w.strip().lower() for w in (args.snapshots or "").split(";") if w.strip()]
+    if not wanted:
+        return
+    if not args.google:
+        print("Snapshots need the Google key (--google).", file=sys.stderr)
+        return
+    from .snapshots import snapshot
+    from .sources.google_dsm import GoogleDSMClient
+
+    client = GoogleDSMClient(os.environ[args.google_key_env])
+    out_dir = args.out.rsplit(".", 1)[0] + "_snapshots"
+    cache = os.path.join(os.path.dirname(os.path.abspath(args.google_cache)), "imagery_cache")
+    for o in outcomes:
+        if any(w in o.site.id.lower() for w in wanted):
+            try:
+                path = snapshot(o, client, out_dir, cache)
+                print(f"Snapshot: {path}" if path else f"Snapshot: {o.site.id} has no counted buildings")
+            except Exception as exc:  # one failed image must not lose the run's results
+                print(f"Snapshot failed for {o.site.id}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
 def _equipment(args: argparse.Namespace):
@@ -171,6 +195,7 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
         search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
         google_max_points=args.google_max_points, unit_addresses=_unit_addresses(args, sites),
         parcels=_parcels(args), include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio,
+        carport_min_kw=args.carport_min_kw,
         equipment_client=_equipment(args),
     )
     site_rows = [o.row() for o in outcomes]
@@ -185,6 +210,7 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
     found = sum(1 for o in outcomes if o.buildings)
     if _equipment_summary(outcomes):
         print(_equipment_summary(outcomes))
+    _snapshots(args, outcomes)
     manual = [r for r in site_rows if r["manual_review"]]
     print(f"{len(sites)} sites: {found} matched to buildings -> {args.out}")
     print(f"{len(manual)} of {len(sites)} ({len(manual) / max(len(sites), 1):.0%}) need a manual look at current imagery "
@@ -221,7 +247,8 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
             sites, footprints, geo, geocoder, client, calibrator, ReviewPolicy(),
             search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
             google_max_points=args.google_max_points, unit_addresses=units, parcels=parcels,
-            include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio, progress=progress,
+            include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio,
+            carport_min_kw=args.carport_min_kw, progress=progress,
             equipment_client=equipment,
         )
         return outcomes, compare(truth, outcomes, geo.design.module.watts_dc)
@@ -260,6 +287,7 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
             med = statistics.median(errs) if errs else float("nan")
             mark = "  <- shown above (default; set with --min-panel-energy-ratio)" if r == ratio else ""
             print(f"{r:7.2f} {hits:>5} of {len(errs):<3} {med_abs:>12.0%} {med:>+11.0%}{mark}")
+    _snapshots(args, outcomes)
     print(f"\nFull report: {args.out}")
     return 0
 
@@ -337,6 +365,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="max Google lookups per building; large buildings are split by Google into pieces")
     design.add_argument("--no-equipment-detection", action="store_true",
                         help="don't look up rooftop equipment in Google's surface model (one billed dataLayers call per flat roof)")
+    design.add_argument("--snapshots", default="",
+                        help="save satellite PNGs with the layout drawn on for these sites (name parts, ';'-separated)")
     design.add_argument("--workers", type=int, default=8)
     design.add_argument("--include-north-faces", action="store_true",
                         help="keep Google panels on north-facing pitched roof faces (excluded by default)")
@@ -362,6 +392,10 @@ def build_parser() -> argparse.ArgumentParser:
     design.add_argument("--south-gcr-fixed", action="store_true", help="use --gcr for south racking instead of shading-derived spacing")
     design.add_argument("--section-gap-ft", type=float, default=4.0, help="IFC 1205.3.3 array separation (4 or 8 ft)")
     design.add_argument("--edge-setback-ft", type=float, default=0.0, help="wind/structural edge setback if larger than fire code")
+    design.add_argument("--pitched-setback-in", type=float, default=36.0,
+                        help="setback from pitched roof-plane edges in inches (36; some AHJs allow 18)")
+    design.add_argument("--carport-min-kw", type=float, default=15.0,
+                        help="count a detached garage or carport only if at least this many kW fit")
     design.add_argument("--no-residential-alternative", action="store_true", help="apply commercial rules to pitched R-2 roofs")
 
     s = sub.add_parser("size", parents=[design], help="size every building in a KML/KMZ or GeoJSON file")

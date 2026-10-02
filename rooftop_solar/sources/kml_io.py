@@ -181,7 +181,8 @@ def _ring(coords) -> str:
 
 
 def write_kml_layouts(results: list[SizingResult], path: str | Path) -> None:
-    """Placed modules as KML, one folder per building, for review in Google Earth."""
+    """Placed modules as KML for review in Google Earth: one folder per site (labelled on the
+    map), with a folder per building inside."""
     parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Solar layouts</name>',
@@ -194,35 +195,47 @@ def write_kml_layouts(results: list[SizingResult], path: str | Path) -> None:
         '<Style id="raised"><LineStyle><color>ff0080ff</color><width>1</width></LineStyle>'
         "<PolyStyle><color>990080ff</color></PolyStyle></Style>",
     ]
-    for r in results:
-        parts.append(f"<Folder><name>{escape(r.building_id)} - {r.dc_kw:.1f} kW DC ({r.module_count} modules)</name>")
-        if r.footprint is not None:
-            parts.append(
-                f"<Placemark><name>{escape(r.building_id)} roof</name><styleUrl>#roof</styleUrl>"
-                "<Polygon><outerBoundaryIs><LinearRing>"
-                f"<coordinates>{_ring(r.footprint.exterior.coords)}</coordinates>"
-                "</LinearRing></outerBoundaryIs></Polygon></Placemark>"
-            )
-        for poly in r.layout:
-            parts.append(
-                "<Placemark><styleUrl>#module</styleUrl><Polygon><outerBoundaryIs><LinearRing>"
-                f"<coordinates>{_ring(poly.exterior.coords)}</coordinates>"
-                "</LinearRing></outerBoundaryIs></Polygon></Placemark>"
-            )
-        for poly in r.equipment:
-            parts.append(
-                "<Placemark><name>rooftop equipment</name><styleUrl>#equipment</styleUrl>"
-                "<Polygon><outerBoundaryIs><LinearRing>"
-                f"<coordinates>{_ring(poly.exterior.coords)}</coordinates>"
-                "</LinearRing></outerBoundaryIs></Polygon></Placemark>"
-            )
-        for poly in r.raised_areas:
-            parts.append(
-                "<Placemark><name>raised racking only</name><styleUrl>#raised</styleUrl>"
-                "<Polygon><outerBoundaryIs><LinearRing>"
-                f"<coordinates>{_ring(poly.exterior.coords)}</coordinates>"
-                "</LinearRing></outerBoundaryIs></Polygon></Placemark>"
-            )
+    sites: dict[str, list[SizingResult]] = {}
+    for r in results:  # building ids are "<site>" or "<site> #<n>"
+        sites.setdefault(re.sub(r" #\d+$", "", r.building_id), []).append(r)
+    for site, members in sites.items():
+        total = sum(r.dc_kw for r in members)
+        parts.append(f"<Folder><name>{escape(site)} - {total:.1f} kW DC ({len(members)} buildings)</name>")
+        anchor = next((r.footprint for r in members if r.footprint is not None), None)
+        if anchor is not None:
+            pt = anchor.representative_point()
+            parts.append(f"<Placemark><name>{escape(site)}</name><Point><coordinates>{pt.x:.8f},{pt.y:.8f},0"
+                         "</coordinates></Point></Placemark>")
+        for r in members:
+            parts.append(f"<Folder><name>{escape(r.building_id)} - {r.dc_kw:.1f} kW DC ({r.module_count} modules)</name>")
+            if r.footprint is not None:
+                parts.append(
+                    f"<Placemark><name>{escape(r.building_id)} roof</name><styleUrl>#roof</styleUrl>"
+                    "<Polygon><outerBoundaryIs><LinearRing>"
+                    f"<coordinates>{_ring(r.footprint.exterior.coords)}</coordinates>"
+                    "</LinearRing></outerBoundaryIs></Polygon></Placemark>"
+                )
+            for poly in r.layout:
+                parts.append(
+                    "<Placemark><styleUrl>#module</styleUrl><Polygon><outerBoundaryIs><LinearRing>"
+                    f"<coordinates>{_ring(poly.exterior.coords)}</coordinates>"
+                    "</LinearRing></outerBoundaryIs></Polygon></Placemark>"
+                )
+            for poly in r.equipment:
+                parts.append(
+                    "<Placemark><name>rooftop equipment</name><styleUrl>#equipment</styleUrl>"
+                    "<Polygon><outerBoundaryIs><LinearRing>"
+                    f"<coordinates>{_ring(poly.exterior.coords)}</coordinates>"
+                    "</LinearRing></outerBoundaryIs></Polygon></Placemark>"
+                )
+            for poly in r.raised_areas:
+                parts.append(
+                    "<Placemark><name>raised racking only</name><styleUrl>#raised</styleUrl>"
+                    "<Polygon><outerBoundaryIs><LinearRing>"
+                    f"<coordinates>{_ring(poly.exterior.coords)}</coordinates>"
+                    "</LinearRing></outerBoundaryIs></Polygon></Placemark>"
+                )
+            parts.append("</Folder>")
         parts.append("</Folder>")
     parts.append("</Document></kml>")
     Path(path).write_text("\n".join(parts))

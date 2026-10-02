@@ -51,6 +51,12 @@ if [ -s "$HOME_DIR/google_api_key" ]; then
   ARGS+=(--google --google-cache "$HOME_DIR/google_cache")
 fi
 
+if [ -s "$HOME_DIR/google_api_key" ]; then
+  echo "Satellite snapshots (optional): type site names separated by ; (e.g. Garrison;Alexander), or press Return to skip:"
+  read -r SNAP
+  [ -n "$SNAP" ] && ARGS+=(--snapshots "$SNAP")
+fi
+
 if "$CLI" "${ARGS[@]}"; then
   open "$DIR"
   finish 0

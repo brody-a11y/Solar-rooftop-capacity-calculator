@@ -208,3 +208,28 @@ def test_outline_estimate_ignores_detected_equipment_and_kml_draws_it(tmp_path):
     path = tmp_path / "l.kml"
     write_kml_layouts([b.primary], path)
     assert path.read_text().count("rooftop equipment") == 1
+
+
+def test_snapshot_draws_layers_on_imagery(tmp_path):
+    import tifffile
+    from pyproj import Transformer
+
+    from rooftop_solar.snapshots import BLUE, RED, YELLOW, render
+
+    fp = FRAME.to_lonlat(box(-20, -10, 20, 10))
+    c = fp.centroid
+    cx, cy = Transformer.from_crs(4326, 32611, always_xy=True).transform(c.x, c.y)
+    rgb = np.full((240, 240, 3), 90, np.uint8)  # 60 x 60 m of grey roof at 0.25 m
+    buf = io.BytesIO()
+    keys = (1, 1, 0, 1, 3072, 0, 1, 32611)
+    tifffile.imwrite(buf, rgb, photometric="rgb", extratags=[
+        (33550, "d", 3, (0.25, 0.25, 0.0)), (33922, "d", 6, (0, 0, 0, cx - 30, cy + 30, 0)),
+        (34735, "H", len(keys), keys)])
+    panel = FRAME.to_lonlat(box(-5, -2, -3, -1))
+    unit = FRAME.to_lonlat(box(5, 2, 7, 4))
+    img = render(buf.getvalue(), [([panel], BLUE, 1.0, 0.0), ([unit], RED, 1.0, 0.15), ([fp], YELLOW, 1.0, 0.25)])
+    assert img.shape == (240, 240, 3) and img.dtype == np.uint8
+    colors = {tuple(px) for px in img.reshape(-1, 3)}
+    assert BLUE in colors and RED in colors and YELLOW in colors and (90, 90, 90) in colors
+    # the panel sits at local (-4, -1.5): 4 m west, 1.5 m south of the image centre
+    assert tuple(img[120 + 6, 120 - 16]) == BLUE

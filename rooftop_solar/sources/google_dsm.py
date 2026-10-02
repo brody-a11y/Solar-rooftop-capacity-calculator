@@ -93,22 +93,30 @@ def mask_to_polygon(mask: np.ndarray, pixel_to_xy) -> Polygon:
     return unary_union(boxes)
 
 
-def read_geotiff(data: bytes):
-    """(array, pixel_to_crs(col, row), epsg) from a north-up GeoTIFF."""
+def read_geotiff(data: bytes, raw: bool = False):
+    """(array, pixel_to_crs(col, row), epsg) from a north-up GeoTIFF. The first
+    band as float, or with raw=True the array as stored (e.g. RGB imagery)."""
     import tifffile
 
     with tifffile.TiffFile(io.BytesIO(data)) as tif:
         page = tif.pages[0]
-        arr = page.asarray().astype("float64")
-        if arr.ndim == 3:
-            arr = arr[..., 0]
+        arr = page.asarray()
         tags = {t.code: t.value for t in page.tags.values()}
-    # GeoTIFF georeferencing: tiepoint + pixel scale (33922/33550), or a full
-    # model transformation matrix (34264).
-    keys = tags.get(34735, ())
+    if raw:
+        return (arr,) + _georef(tags)
+    arr = arr.astype("float64")
+    if arr.ndim == 3:
+        arr = arr[..., 0]
     nodata = tags.get(42113)
     if nodata not in (None, ""):
         arr[arr == float(str(nodata).strip("\x00"))] = np.nan
+    return (arr,) + _georef(tags)
+
+
+def _georef(tags: dict):
+    """(pixel_to_crs, epsg) from GeoTIFF tags: tiepoint + pixel scale
+    (33922/33550), or a full model transformation matrix (34264)."""
+    keys = tags.get(34735, ())
     if 33922 in tags and 33550 in tags:
         tie, scale = tags[33922], tags[33550]
         i0, j0, x0, y0 = tie[0], tie[1], tie[3], tie[4]
@@ -129,7 +137,7 @@ def read_geotiff(data: bytes):
     def pixel_to_crs(col, row):
         return a * col + b * row + d, e * col + f * row + h
 
-    return arr, pixel_to_crs, epsg or 4326
+    return pixel_to_crs, epsg or 4326
 
 
 class GoogleDSMClient:
@@ -165,6 +173,18 @@ class GoogleDSMClient:
         url = resp.json().get("dsmUrl")
         if not url:
             raise ValueError("no_dsm_in_response")
+        return self._get(url, {"key": self.api_key}).content
+
+    def imagery(self, lat: float, lon: float, radius_m: float) -> bytes:
+        """RGB aerial GeoTIFF around a point (Solar API dataLayers, one billed call)."""
+        resp = self._get(DATA_LAYERS_URL, {
+            "location.latitude": f"{lat:.7f}", "location.longitude": f"{lon:.7f}",
+            "radiusMeters": f"{min(max(radius_m, 10.0), 100.0):.0f}", "view": "IMAGERY_LAYERS",
+            "requiredQuality": "LOW", "pixelSizeMeters": f"{self.pixel_size_m:g}", "key": self.api_key,
+        })
+        url = resp.json().get("rgbUrl")
+        if not url:
+            raise ValueError("no_rgb_in_response")
         return self._get(url, {"key": self.api_key}).content
 
     def equipment(self, footprint: Polygon, min_height_m: float = 0.3, max_size_m: float = 6.0) -> list[Polygon]:

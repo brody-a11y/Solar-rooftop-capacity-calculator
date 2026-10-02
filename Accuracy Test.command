@@ -35,5 +35,11 @@ else
   echo "No Google key saved; running footprint-only."
 fi
 
+if [ -s "$HOME_DIR/google_api_key" ]; then
+  echo "Satellite snapshots (optional): type site names separated by ; (e.g. Garrison;Alexander), or press Return to skip:"
+  read -r SNAP
+  [ -n "$SNAP" ] && ARGS+=(--snapshots "$SNAP")
+fi
+
 "$CLI" "${ARGS[@]}"
 finish $?

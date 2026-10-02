@@ -51,6 +51,7 @@ def test_cli_writes_google_earth_layout(tmp_path):
     assert main(["size", "--buildings", str(SAMPLE), "--out", str(out), "--layouts", str(layout)]) == 0
     root = ET.parse(layout).getroot()
     ns = {"k": "http://www.opengis.net/kml/2.2"}
-    folders = root.findall(".//k:Folder", ns)
-    assert len(folders) == 2
+    sites = root.findall("k:Document/k:Folder", ns)
+    assert len(sites) == 2  # one folder per site, labelled with a point
+    assert all(len(f.findall("k:Folder", ns)) == 1 and f.find("k:Placemark/k:Point", ns) is not None for f in sites)
     assert len(root.findall(".//k:Placemark", ns)) > 100

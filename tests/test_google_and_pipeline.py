@@ -277,3 +277,25 @@ def test_one_bad_building_does_not_stop_the_batch(monkeypatch):
     est = _size_one((b, GeometricEstimator(), GoogleInsights.from_response(google_response()), None, None, ReviewPolicy()))
     assert est.method == "geometric" and est.dc_kw > 0
     assert est.reasons[0] == "google_sizing_error:ValueError_sized_from_outline" and est.needs_review
+
+
+def test_pitched_layout_kept_inside_plane_edge_setback():
+    from rooftop_solar.fire_code import FireCodeRules
+
+    b = Building("a", centered_box_ft(200, 100), Occupancy.R2)
+    resp = google_response(pitch=25.0)
+    # west plane (segment 0) and east plane (segment 1) meet at a ridge along x = 15 m (off the
+    # 4 ft array-section pathway at x = 0, which would already clear the ridge)
+    resp["solarPotential"]["roofSegmentStats"] = [{"pitchDegrees": 25.0, "azimuthDegrees": 270.0},
+                                                  {"pitchDegrees": 25.0, "azimuthDegrees": 90.0}]
+    for p in resp["solarPotential"]["solarPanels"]:
+        x, _y = FRAME.point_to_local(p["center"]["longitude"], p["center"]["latitude"])
+        p["segmentIndex"] = 0 if x < 15 else 1
+        p["orientation"] = "PORTRAIT"  # long side downslope (east-west), matching the grid spacing
+    ins = GoogleInsights.from_response(resp)
+    design = DesignConfig(min_panel_energy_ratio=0.0)
+    count = lambda inches: GoogleFilteredEstimator(GeometricEstimator(FireCodeRules(residential_setback_ft=inches / 12),
+                                                                      design)).estimate(b, ins)
+    none, r18, r36 = count(0), count(18), count(36)
+    assert none.module_count > r18.module_count >= r36.module_count > 0  # panels pulled back from the ridge
+    assert r36.details["pitched_setback_kw"] > 0 and none.details["pitched_setback_kw"] == 0

@@ -306,6 +306,7 @@ def size_sites(
     max_parcel_buildings: int = 120,
     include_carports: bool = True,
     carport_min_energy_ratio: float = 0.8,
+    carport_min_kw: float = 15.0,
     max_owner_lookups: int = 10,
     equipment_client=None,
     stale_imagery_years: float = 6.0,
@@ -527,7 +528,7 @@ def size_sites(
         # and their typical panel yields >= carport_min_energy_ratio of the best roof panel.
         best = max((e.google.details.get("best_panel_kwh", 0.0) for b, e in zip(o.buildings, o.estimates)
                     if e.google and b.structure == "building"), default=0.0)
-        shaded = no_data = 0
+        shaded = no_data = small = 0
         for i, (b, e) in enumerate(zip(o.buildings, o.estimates)):
             if b.structure == "building" or not o.counted[i]:
                 continue
@@ -537,8 +538,13 @@ def size_sites(
             elif best and e.google.details.get("median_panel_kwh", 0.0) < carport_min_energy_ratio * best:
                 o.counted[i] = False
                 shaded += 1
+            elif e.dc_kw < carport_min_kw:  # Ivy: only where a sizeable system fits
+                o.counted[i] = False
+                small += 1
         if shaded:
             o.reasons.append(f"not_counted_{shaded}_shaded_carports")
+        if small:
+            o.reasons.append(f"not_counted_{small}_carports_or_garages_under_{carport_min_kw:g}_kw")
         if no_data and not any("without_google_data" in r for r in o.reasons):
             o.reasons.append(f"not_counted_{no_data}_carports_without_google_data")
     # Outline-only sizing ignores rooftop equipment. Scale it by the typical ratio of

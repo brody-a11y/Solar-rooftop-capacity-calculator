@@ -23,7 +23,7 @@ from shapely.ops import unary_union
 from shapely.validation import make_valid
 
 from ..geometry import LocalFrame, polygons
-from ..models import Building, Racking, SizingResult
+from ..models import FT, Building, Racking, SizingResult
 from ..sizing import GeometricEstimator
 
 API_URL = "https://solar.googleapis.com/v1/buildingInsights:findClosest"
@@ -325,16 +325,22 @@ class GoogleFilteredEstimator:
         best_kwh = energies[int(0.9 * (len(energies) - 1))] if energies else 0.0
         min_kwh = design.min_panel_energy_ratio * best_kwh
         kinds = set()
-        for p in insights.panels:
+        rects = [_panel_rect(insights, p, _segment(insights, p), frame) for p in insights.panels]
+        pitched_ok = self._pitched_setback_zones(insights, rects, flat_threshold)
+        setback_m2 = 0.0  # pitched panels inside the plane-edge setback
+        for p, rect in zip(insights.panels, rects):
             seg = _segment(insights, p)
             across, down = _panel_dims(insights, p)
             is_flat = seg.pitch_deg < flat_threshold
             all_surface_m2 += across * down
             if is_flat:
                 all_flat_m2 += across * down
-            rect = _panel_rect(insights, p, seg, frame)
             if not is_flat:
                 dropped.append(rect)
+                ok = pitched_ok.get(p.segment_index)
+                if ok is not None and rect.intersection(ok).area < self.min_inside_fraction * rect.area:
+                    setback_m2 += across * down
+                    continue
             if rect.intersection(zone).area < self.min_inside_fraction * rect.area:
                 if equipment and is_flat and rect.intersection(raised_zone).area >= self.min_inside_fraction * rect.area:
                     equipment_m2 += across * down
@@ -411,6 +417,7 @@ class GoogleFilteredEstimator:
                 "median_panel_kwh": sorted(kept_kwh)[len(kept_kwh) // 2] if kept_kwh else 0.0,
                 "equipment_detected": len(equipment),
                 "equipment_clearance_kw": round(int(equipment_m2 * flat_density // design.module.area_m2) * design.module.watts_dc / 1000.0, 1),
+                "pitched_setback_kw": round(int(setback_m2 // design.module.area_m2) * design.module.watts_dc / 1000.0, 1),
                 "low_yield_kw": round(int(low_yield_m2 // design.module.area_m2) * design.module.watts_dc / 1000.0, 1),
                 "imagery_quality": insights.imagery_quality,
                 "imagery_date": insights.imagery_date,
@@ -456,6 +463,32 @@ class GoogleFilteredEstimator:
             except GEOSException:  # a degenerate sliver; skip it rather than fail the building
                 continue
         return int(sum(gap.area for gap in gaps) * flat_density // design.module.area_m2), gaps
+
+    def _pitched_setback_zones(self, insights: GoogleInsights, rects, flat_threshold: float) -> dict:
+        """Per pitched roof segment, the area at least `pitched_setback` inside the
+        edge of Google's array on that plane.
+
+        Google doesn't return roof-plane outlines, and on pitched roofs its
+        layouts run close to the plane edges (ridge, eaves, hips, rakes). The
+        array's own outline stands in for the plane, so panels within the setback
+        of it are dropped (IFC 1205.2: 36 in, 18 in where the AHJ allows). An
+        approximation: where Google already left a margin this over-trims.
+        """
+        setback = self.geometric.rules.residential_setback_ft * FT
+        if setback <= 0:
+            return {}
+        by_seg: dict[int, list] = {}
+        for p, rect in zip(insights.panels, rects):
+            if _segment(insights, p).pitch_deg >= flat_threshold:
+                by_seg.setdefault(p.segment_index, []).append(rect)
+        zones = {}
+        for idx, rs in by_seg.items():
+            try:
+                array = unary_union(rs).buffer(0.3, join_style="mitre").buffer(-0.3, join_style="mitre")
+                zones[idx] = array.buffer(-setback, join_style="mitre")
+            except GEOSException:
+                continue
+        return zones
 
     def _poleward(self, azimuth_deg: float, lat: float) -> bool:
         pole = 0.0 if lat >= 0 else 180.0

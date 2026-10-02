@@ -235,13 +235,16 @@ def test_unshaded_carports_counted_separately_shaded_ones_not(tmp_path):
 
     lon, lat = ll(20, 7)
     out = size_sites([Site("Oak", lat=lat, lon=lon)], fp, GeometricEstimator(design=DesignConfig(flat_racking=Racking.FLUSH)),
-                     google_client=Client(), workers=1, progress=lambda *_: None, parcels=Parcels())[0]
+                     google_client=Client(), workers=1, progress=lambda *_: None, parcels=Parcels(), carport_min_kw=0)[0]
     assert sorted(b.structure for b in out.buildings) == ["building", "carport_or_garage", "carport_or_garage"]
     row = out.row()
     assert row["rooftop_kw"] > 0 and row["carport_kw"] > 0
     assert "not_counted_1_shaded_carports" in out.reasons
     assert row["dc_kw"] == pytest.approx(row["rooftop_kw"] + row["carport_kw"], abs=0.05)
     assert len(out.rooftop_estimates()) == 1
+    small = size_sites([Site("Oak", lat=lat, lon=lon)], fp, GeometricEstimator(design=DesignConfig(flat_racking=Racking.FLUSH)),
+                       google_client=Client(), workers=1, progress=lambda *_: None, parcels=Parcels(), carport_min_kw=1e6)[0]
+    assert any(r.startswith("not_counted_1_carports_or_garages_under_") for r in small.reasons)
 
 
 def test_outline_only_main_building_counted_scaled_and_flagged(footprints):
