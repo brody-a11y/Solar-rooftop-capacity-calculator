@@ -346,3 +346,72 @@ def test_zip_filled_from_parcel_and_units_counted(footprints):
     row = out.row()
     assert row["units_in_address_data"] == 3 and row["units_in_parcel_records"] == 48
     assert "zip_90012_added_for_unit_lookup" in out.reasons
+
+
+def _owned(poly, owner):
+    f = _v2_response(poly)["parcels"]["features"][0]
+    f["properties"]["fields"]["owner"] = owner
+    return regrid_mod._parcel(f)
+
+
+class _LotParcels:
+    """Single-family lots: the site's lot (apt-a), a same-owner lot (apt-b), a neighbour's lot (unknown)."""
+
+    def __init__(self):
+        self.near_calls = []
+
+    def parcel_at(self, lat, lon):
+        return _owned(box(190, -10, 250, 22), "AHV Communities LLC")
+
+    def parcels_near(self, lat, lon, radius_m, limit):
+        self.near_calls.append(radius_m)
+        return [_owned(box(190, -10, 250, 22), "AHV Communities LLC"),
+                _owned(box(190, 25, 250, 55), "AHV COMMUNITIES, L.L.C."),
+                _owned(box(390, -10, 440, 30), "Jane Smith")]
+
+
+def test_single_family_community_adds_same_owner_lots(footprints):
+    from rooftop_solar.models import Occupancy
+
+    lon, lat = ll(220, 7)
+    parcels = _LotParcels()
+    site = Site("Altura", lat=lat, lon=lon, occupancy=Occupancy.R3, units=40)
+    out = size_sites([site], footprints, GeometricEstimator(), workers=1, progress=lambda *_: None, parcels=parcels)[0]
+    assert sorted(m.overture_id for m in out.matches) == ["apt-a", "apt-b"]  # not the neighbour's house
+    assert len(parcels.near_calls) == 1 and 150 <= parcels.near_calls[0] <= 1000
+    assert any(r.startswith("added_1_buildings_from_1_same_owner_lots") for r in out.reasons)
+
+
+def test_apartment_site_does_not_search_nearby_lots(footprints):
+    lon, lat = ll(220, 7)
+    parcels = _LotParcels()
+    out = size_sites([Site("Oak", lat=lat, lon=lon, units=200)], footprints, GeometricEstimator(), workers=1,
+                     progress=lambda *_: None, parcels=parcels)[0]
+    assert parcels.near_calls == [] and [m.overture_id for m in out.matches] == ["apt-a"]
+
+
+def test_parcels_near_sends_radius_and_caches(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_get(self, url, params=None, timeout=None):
+        calls.append(params)
+        return _Resp(200, _v2_response(box(0, 0, 10, 10), box(20, 0, 30, 10)))
+
+    monkeypatch.setattr(regrid_mod.requests.Session, "get", fake_get)
+    client = RegridClient("t", cache_dir=tmp_path)
+    assert len(client.parcels_near(34.0, -118.0, 300, 500)) == 2
+    client.parcels_near(34.0, -118.0, 300, 500)
+    assert len(calls) == 1 and calls[0]["radius"] == "300" and calls[0]["limit"] == "500"
+
+
+def test_read_sites_reads_units_and_housing_type(tmp_path):
+    from rooftop_solar.models import Occupancy
+    from rooftop_solar.sites import read_sites
+
+    p = tmp_path / "s.csv"
+    p.write_text("Name,Address,City,State,Zip,Units,HousingType\n"
+                 "Altura,13003 Toepperwein Road,San Antonio,TX,78233,316,Single-Family BTR\n"
+                 "Tower,1 Main St,Austin,TX,78701,\"1,200\",Mid-Rise\n")
+    a, b = read_sites(str(p))
+    assert a.units == 316 and a.occupancy == Occupancy.R3
+    assert b.units == 1200 and b.occupancy is None

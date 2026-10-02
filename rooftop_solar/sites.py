@@ -36,7 +36,8 @@ _HEADERS = {
     "zip": ("zip", "zip code", "zipcode", "postal code", "postcode"),
     "lat": ("lat", "latitude", "y"),
     "lon": ("lon", "lng", "long", "longitude", "x"),
-    "occupancy": ("occupancy", "building type", "type", "property type"),
+    "occupancy": ("occupancy", "building type", "type", "property type", "housing type", "housingtype"),
+    "units": ("units", "unit count", "number of units", "# units", "num units", "total units"),
     "group": ("group", "property group", "parent property", "main address", "complex"),
 }
 
@@ -53,7 +54,7 @@ def _occupancy_from_text(text: str) -> Occupancy | None:
         return Occupancy.COMMERCIAL
     if "multi" in t or "apartment" in t or t in ("r-2", "r2", "mf"):
         return Occupancy.R2
-    if t in ("r-3", "r3") or "townho" in t or "single" in t:
+    if t in ("r-3", "r3") or "townho" in t or "single" in t or "btr" in t or "rental home" in t:
         return Occupancy.R3
     return None
 
@@ -66,6 +67,7 @@ class Site:
     lon: float | None = None
     occupancy: Occupancy | None = None
     group: str = ""  # rows sharing a group are one property (e.g. one row per building)
+    units: int | None = None  # homes/apartments at the property, if the input lists them
 
 
 def read_sites(path: str) -> list[Site]:
@@ -102,7 +104,9 @@ def read_sites(path: str) -> list[Site]:
             seen[sid] = seen.get(sid, 0) + 1
             if seen[sid] > 1:
                 sid = f"{sid} ({seen[sid]})"
-            sites.append(Site(sid, address, lat, lon, _occupancy_from_text(get("occupancy")), get("group")))
+            units = re.sub(r"[^0-9.]", "", get("units"))
+            sites.append(Site(sid, address, lat, lon, _occupancy_from_text(get("occupancy")), get("group"),
+                              int(float(units)) if units and float(units) > 0 else None))
     return sites
 
 
@@ -309,6 +313,7 @@ def size_sites(
     carport_min_energy_ratio: float = 0.8,
     carport_min_kw: float = 15.0,
     max_owner_lookups: int = 10,
+    max_nearby_parcels: int = 1000,
     equipment_client=None,
     stale_imagery_years: float = 6.0,
     min_imagery_coverage: float = 0.25,
@@ -452,6 +457,43 @@ def size_sites(
             if other_owner:
                 o.reasons.append(f"skipped_{other_owner}_parcels_other_owner_under_unit_addresses")
 
+    # Single-family rental communities (build-to-rent, townhomes on their own
+    # lots): the address is one lot, the property is every nearby lot with the
+    # same owner. Triggered when the input lists far more homes than the
+    # parcels found so far hold buildings.
+    if parcels is not None and max_nearby_parcels > 0 and hasattr(parcels, "parcels_near"):
+        for o in outcomes:
+            units = o.site.units
+            homes = [m for m in found.get(o.site.id, []) if structure_kind(m) == "building"]
+            if o.site.id not in parcel_sites or not units or units < 10 or len(homes) * 3 >= units:
+                continue
+            house_sized = bool(homes) and sorted(_fp_area_m2(m.footprint) for m in homes)[len(homes) // 2] < 300.0
+            if o.site.occupancy != Occupancy.R3 and not house_sized:  # apartments: units share buildings
+                continue
+            if o.parcel.units and o.parcel.units * 2 >= units:  # an apartment parcel, not a lot
+                continue
+            radius = min(1000.0, max(150.0, 1.6 * math.sqrt(units * 450.0 / math.pi)))
+            try:
+                near = parcels.parcels_near(o.geocode.lat, o.geocode.lon, radius, max_nearby_parcels)
+            except Exception as exc:
+                o.reasons.append(f"nearby_parcel_lookup_failed:{redact(exc)[:40]}")
+                continue
+            same = [p for p in near if same_owner(p, o.parcel) and not p.geometry.equals(o.parcel.geometry)]
+            if not same:
+                o.reasons.append(f"no_same_owner_lots_within_{radius:.0f}m")
+                continue
+            have = {m.overture_id for m in found.get(o.site.id, [])}
+            added = 0
+            for ms in footprints.in_polygons({f"{o.site.id}\x00{i}": p.geometry for i, p in enumerate(same)}).values():
+                for m in ms:
+                    if m.overture_id not in have and (include_carports or structure_kind(m) == "building"):
+                        found[o.site.id].append(m)
+                        have.add(m.overture_id)
+                        added += 1
+            o.reasons.append(f"added_{added}_buildings_from_{len(same)}_same_owner_lots_within_{radius:.0f}m")
+            if len(near) >= max_nearby_parcels:
+                o.reasons.append(f"nearby_parcels_capped_at_{max_nearby_parcels}_some_lots_may_be_missed")
+
     # Otherwise: buildings under the county's per-unit address points.
     if unit_addresses is not None and campus_m == 0:
         unit_pts: dict[str, tuple[float, float]] = {}
@@ -585,7 +627,11 @@ def _address_with_zip(o: SiteOutcome) -> str:
 
 
 def _area_m2(b: Building) -> float:
-    return LocalFrame.for_geometry(b.footprint).to_local(b.footprint).area
+    return _fp_area_m2(b.footprint)
+
+
+def _fp_area_m2(footprint) -> float:
+    return LocalFrame.for_geometry(footprint).to_local(footprint).area
 
 
 def imagery_concerns(o: SiteOutcome, stale_years: float, min_coverage: float, today: date) -> list[str]:

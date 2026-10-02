@@ -124,6 +124,24 @@ class RegridClient:
             delay *= 2
         raise RegridError("timeout")  # not reached
 
+    def parcels_near(self, lat: float, lon: float, radius_m: float, limit: int = 1000) -> list[Parcel]:
+        """Every parcel within `radius_m` of the point, up to `limit` (one request,
+        billed per parcel record returned)."""
+        key = hashlib.sha1(f"near|{lat:.7f},{lon:.7f}|{radius_m:.0f}|{limit}".encode()).hexdigest()
+        path = self.cache_dir / f"{key}.json" if self.cache_dir else None
+        if path and path.exists():
+            data = json.loads(path.read_text())
+        else:
+            resp = self._get({"lat": f"{lat:.7f}", "lon": f"{lon:.7f}", "radius": f"{radius_m:.0f}",
+                              "limit": str(limit), "token": self.token})
+            if resp.status_code != 200:
+                raise RegridError(f"http_{resp.status_code}")
+            data = resp.json()
+            if path:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(data))
+        return [p for p in (_parcel(f) for f in _features(data)) if p is not None]
+
     def parcel_at(self, lat: float, lon: float) -> Parcel:
         """The parcel containing the point (or the nearest one Regrid returns)."""
         key = hashlib.sha1(f"{lat:.7f},{lon:.7f}".encode()).hexdigest()
