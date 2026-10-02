@@ -46,8 +46,9 @@ Sizing a list of properties (no drawing needed)
    Satellite snapshots: when asked, type part of the site names (e.g.
    Garrison;Alexander). A PNG per site with the layout drawn on Google's aerial
    photo goes into a _snapshots folder; one billed Google lookup per site.
-   Pitched roofs: panels are kept 36 in from roof-plane edges (ridges, hips,
-   eaves); add --pitched-setback-in 18 where the AHJ allows 18 in. Detached
+   Pitched roofs: panels are kept 18 in from roof-plane edges (ridges, hips,
+   eaves), the closest match to Ivy's pitched designs; add
+   --pitched-setback-in 36 where the AHJ requires 36 in. Detached
    garages and carports count only if unshaded and 15 kW or more fits.
    Look by hand at rows where manual_review is TRUE: the satellite imagery
    is old, or shows much less roof than the building outline (often a

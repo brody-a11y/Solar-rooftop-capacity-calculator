@@ -416,8 +416,9 @@ def build_parser() -> argparse.ArgumentParser:
     design.add_argument("--south-gcr-fixed", action="store_true", help="use --gcr for south racking instead of shading-derived spacing")
     design.add_argument("--section-gap-ft", type=float, default=4.0, help="IFC 1205.3.3 array separation (4 or 8 ft)")
     design.add_argument("--edge-setback-ft", type=float, default=0.0, help="wind/structural edge setback if larger than fire code")
-    design.add_argument("--pitched-setback-in", type=float, default=36.0,
-                        help="setback from pitched roof-plane edges in inches (36; some AHJs allow 18)")
+    design.add_argument("--pitched-setback-in", type=float, default=18.0,
+                        help="setback from pitched roof-plane edges in inches (18: best match to Ivy's pitched "
+                             "designs in the Oct 2026 accuracy sweep; 36 where the AHJ requires it)")
     design.add_argument("--carport-min-kw", type=float, default=15.0,
                         help="count a detached garage or carport only if at least this many kW fit")
     design.add_argument("--no-residential-alternative", action="store_true", help="apply commercial rules to pitched R-2 roofs")
