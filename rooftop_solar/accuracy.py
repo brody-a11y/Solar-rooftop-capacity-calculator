@@ -24,7 +24,7 @@ import csv
 import json
 from pathlib import Path
 
-from .sites import Site, SiteOutcome
+from .sites import Site, SiteOutcome, _occupancy_from_text
 
 
 def load_truth(path: str | Path) -> dict[str, dict]:
@@ -52,7 +52,8 @@ def load_truth(path: str | Path) -> dict[str, dict]:
 
 
 def truth_sites(truth: dict[str, dict]) -> list[Site]:
-    return [Site(name, t.get("address") or "", t.get("lat"), t.get("lon")) for name, t in truth.items()]
+    return [Site(name, t.get("address") or "", t.get("lat"), t.get("lon"), _occupancy_from_text(t.get("occupancy") or ""),
+                 "", t.get("units")) for name, t in truth.items()]
 
 
 def _best_error(pred_kw: float, truths: list[dict], module_w: float, floor: bool = False) -> tuple[float, dict]:
