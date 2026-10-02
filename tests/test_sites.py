@@ -287,3 +287,11 @@ def test_equipment_clearance_does_not_trigger_stale_imagery_flag():
     o = SiteOutcome(Site("s", ""), buildings=[Building("b", centered_box_ft(100, 100), Occupancy.R2)],
                     estimates=[est], counted=[True])
     assert imagery_concerns(o, 6, 0.25, date(2026, 10, 1)) == []  # 70 of 100 before clearance
+
+
+def test_redact_hides_keys_in_error_text():
+    from rooftop_solar.redact import redact
+
+    msg = "403 Forbidden for url: https://x/v1/dataLayers:get?radiusMeters=88&key=AIzaSECRET123&view=IMAGERY"
+    assert "AIzaSECRET123" not in redact(msg) and "key=***" in redact(msg)
+    assert redact("token=abc def") == "token=*** def"

@@ -12,6 +12,7 @@ from .calibration import Calibrator, Sample, accuracy, cross_validate
 from .fire_code import FireCodeRules
 from .models import Module, Racking
 from .pipeline import ReviewPolicy, estimate_many
+from .redact import redact
 from .sizing import DesignConfig, GeometricEstimator
 from .sources.geojson_io import load_buildings as load_geojson_buildings
 from .sources.geojson_io import write_layouts as write_geojson_layouts
@@ -106,7 +107,7 @@ def _snapshots(args: argparse.Namespace, outcomes) -> None:
                 path = snapshot(o, client, out_dir, cache)
                 print(f"Snapshot: {path}" if path else f"Snapshot: {o.site.id} has no counted buildings")
             except Exception as exc:  # one failed image must not lose the run's results
-                print(f"Snapshot failed for {o.site.id}: {type(exc).__name__}: {exc}", file=sys.stderr)
+                print(f"Snapshot failed for {o.site.id}: {type(exc).__name__}: {redact(exc)}", file=sys.stderr)
 
 
 def _equipment(args: argparse.Namespace):
@@ -302,7 +303,7 @@ def cmd_permits(args: argparse.Namespace) -> int:
         try:
             got = pull_permits(city, min_kw=args.min_kw, since_year=args.since, limit=args.limit)
         except Exception as exc:  # one portal down must not stop the others
-            print(f"{city}: couldn't read permits ({type(exc).__name__}: {exc})", file=sys.stderr)
+            print(f"{city}: couldn't read permits ({type(exc).__name__}: {redact(exc)})", file=sys.stderr)
             continue
         if args.sample and len(got) > args.sample:
             got = random.Random(0).sample(got, args.sample)

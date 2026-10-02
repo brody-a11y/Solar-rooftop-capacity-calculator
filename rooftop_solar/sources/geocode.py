@@ -20,6 +20,8 @@ from pathlib import Path
 
 import requests
 
+from ..redact import redact
+
 CENSUS_URL = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
 GOOGLE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 
@@ -69,7 +71,7 @@ class Geocoder:
                 result = self._google(address)
             except Exception as exc:  # quota, key or network problem: fall back to the free sources
                 with self._lock:
-                    self.google_errors.append(str(exc)[:200])
+                    self.google_errors.append(redact(exc)[:200])
                 result, google_failed = None, True
             if result is None:  # not found by Google (or Google failed): try Overture, then Census
                 result = self._overture(address) or self._census(address)

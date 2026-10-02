@@ -17,6 +17,7 @@ import numpy as np
 from .calibration import Calibrator, segment_key
 from .geometry import LocalFrame
 from .models import Building, Obstruction, SizingResult
+from .redact import redact
 from .sizing import GeometricEstimator
 from .sources.google_dsm import screen_equipment
 from .sources.google_solar import (DETECTED_KINDS, GoogleFilteredEstimator, GoogleInsights, GoogleLookupError, GoogleSolarClient,
@@ -162,7 +163,7 @@ def estimate_many(
             try:
                 insights[i] = fetch_building(google_client, buildings[i].footprint, google_max_points)
             except GoogleLookupError as exc:
-                errors[i] = str(exc)
+                errors[i] = redact(exc)
             except Exception as exc:  # recorded per building; one bad lookup must not stop a batch
                 errors[i] = type(exc).__name__
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -183,7 +184,7 @@ def estimate_many(
                 found = equipment_client.equipment(buildings[i].footprint)
             except Exception as exc:  # sizing goes ahead without it, flagged
                 code = getattr(getattr(exc, "response", None), "status_code", None)
-                detail = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(exc))[:40].strip("_")
+                detail = re.sub(r"[^A-Za-z0-9_.*-]+", "_", redact(exc))[:40].strip("_")
                 status[i] = f"failed:{f'http_{code}' if code else type(exc).__name__ + (f'_{detail}' if detail else '')}"
                 notes[i].append(f"equipment_lookup_{status[i]}")
                 return

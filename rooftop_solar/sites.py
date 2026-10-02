@@ -20,6 +20,7 @@ from .calibration import Calibrator
 from .geometry import LocalFrame, principal_axes
 from .models import Building, Occupancy
 from .pipeline import ReviewPolicy, SiteEstimate, estimate_many
+from .redact import redact
 from .sizing import GeometricEstimator
 from .sources.geocode import Geocoder, GeocodeResult
 from .sources.google_solar import GoogleInsights, GoogleSolarClient, footprint_from_insights
@@ -328,7 +329,7 @@ def size_sites(
         try:
             o.geocode = geocoder.geocode(s.address)
         except Exception as exc:  # one bad address must not stop a portfolio
-            detail = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(exc))[:60].strip("_")
+            detail = re.sub(r"[^A-Za-z0-9_.*-]+", "_", redact(exc))[:60].strip("_")
             o.reasons.append(f"geocode_error:{type(exc).__name__}" + (f"_{detail}" if detail else ""))
             return
         if o.geocode is None:
