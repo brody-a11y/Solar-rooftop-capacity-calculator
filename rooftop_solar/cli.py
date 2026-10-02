@@ -237,13 +237,16 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
 
     first = [True]
 
-    def run(ratio: float):
-        # Progress on the first pass (the slow one: lookups); later cutoffs reuse the caches.
+    def run(ratio: float, setback_in: float | None = None):
+        # Progress on the first pass (the slow one: lookups); later passes reuse the caches.
         progress = (lambda msg: print(msg, flush=True)) if first[0] else (lambda *_: None)
         if not first[0]:
-            print(f"Re-sizing at panel-yield cutoff {ratio:g}...", flush=True)
+            what = f"pitched setback {setback_in:g} in" if setback_in is not None else f"panel-yield cutoff {ratio:g}"
+            print(f"Re-sizing at {what}...", flush=True)
         first[0] = False
-        geo = GeometricEstimator(geometric.rules, dataclasses.replace(geometric.design, min_panel_energy_ratio=ratio))
+        rules = (dataclasses.replace(geometric.rules, residential_setback_ft=setback_in / 12.0)
+                 if setback_in is not None else geometric.rules)
+        geo = GeometricEstimator(rules, dataclasses.replace(geometric.design, min_panel_energy_ratio=ratio))
         outcomes = size_sites(
             sites, footprints, geo, geocoder, client, calibrator, ReviewPolicy(),
             search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
@@ -264,6 +267,16 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
     # Report the configured cutoff, not the best fit: reference designs are
     # cost-trimmed, so fitting them would bias absolute MaxFit low.
     ratio, outcomes, rows, _ = next(t for t in sweep if t[0] == args.min_panel_energy_ratio)
+    # Pitched-roof setback sweep at the default cutoff (pitched-roof MaxFit sites only).
+    setbacks = sorted({float(x) for x in args.pitched_setbacks.split(",") if x.strip()} | {args.pitched_setback_in}) \
+        if args.pitched_setbacks else []
+    setback_sweep = []
+    for sb in setbacks:
+        srows = rows if sb == args.pitched_setback_in else run(args.min_panel_energy_ratio, sb)[1]
+        errs = [float(r["tool_err"].rstrip("%")) / 100 for r in srows
+                if r["kind"] == "maxfit" and r["roof"] in ("pitched", "mixed") and r["tool_err"]]
+        setback_sweep.append((sb, errs, {r["site"]: r["tool_err"] for r in srows if r["roof"] in ("pitched", "mixed")
+                                         and r["kind"] == "maxfit"}))
     _write_csv(rows, args.out, "site")
     if args.layouts:
         write_layouts([e.primary for o in outcomes for e in o._counted() if e.primary], args.layouts)
@@ -288,6 +301,16 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
             med = statistics.median(errs) if errs else float("nan")
             mark = "  <- shown above (default; set with --min-panel-energy-ratio)" if r == ratio else ""
             print(f"{r:7.2f} {hits:>5} of {len(errs):<3} {med_abs:>12.0%} {med:>+11.0%}{mark}")
+    if len(setback_sweep) > 1:
+        print("\nPitched-roof setback sweep (MaxFit sites with mostly pitched roofs, standard column):")
+        print(f"{'setback':>8} {'within 10%':>11} {'median |err|':>13} {'median err':>11}  per site")
+        for sb, errs, per in setback_sweep:
+            hits = sum(abs(e) <= 0.10 for e in errs)
+            med_abs = statistics.median([abs(e) for e in errs]) if errs else float("nan")
+            med = statistics.median(errs) if errs else float("nan")
+            mark = " <- default" if sb == args.pitched_setback_in else ""
+            sites_txt = ", ".join(f"{k[:14]} {v}" for k, v in per.items())
+            print(f"{sb:6g} in {hits:>5} of {len(errs):<3} {med_abs:>12.0%} {med:>+11.0%}{mark}  {sites_txt}")
     _snapshots(args, outcomes)
     print(f"\nFull report: {args.out}")
     return 0
@@ -424,6 +447,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--geocoder", choices=["auto", "google"], default="auto")
     a.add_argument("--search-m", type=float, default=40.0)
     a.add_argument("--campus-radius-m", type=float, default=0.0)
+    a.add_argument("--pitched-setbacks", default="0,18,36",
+                   help="also size at these pitched-roof setbacks (inches) and compare; '' to skip")
     a.add_argument("--energy-ratios", default="0,0.6,0.7,0.8,0.9",
                    help="comma-separated panel-yield cutoffs to compare (uses saved Google answers, no extra cost)")
     a.set_defaults(func=cmd_accuracy)

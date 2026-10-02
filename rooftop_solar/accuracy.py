@@ -78,9 +78,15 @@ def compare(truth: dict[str, dict], outcomes: list[SiteOutcome], module_w: float
         raw = sum(e.google.details.get("google_unclipped_kw", 0) for e in est if e.google) if goo is not None else None
         raised = (final + o.raised_extra_kw(rooftop_only=True)) if o and final else None
         floor = t.get("kind") == "floor"
+        by_roof: dict[str, float] = {}
+        for e in est:
+            if e.primary:
+                by_roof[e.primary.roof_type] = by_roof.get(e.primary.roof_type, 0.0) + e.dc_kw
+        roof = max(by_roof, key=by_roof.get) if by_roof else ""
         row = {
             "site": name,
             "kind": "floor" if floor else "maxfit",
+            "roof": roof,
             "manual_review": ";".join(o.manual_review) if o else "",
             "designs_kw": " / ".join(f"{d['kw']:g}" + (f"@{d['module_w']:g}W" if d.get("module_w") else "")
                                      + ("R" if d.get("racking") == "raised" else "") for d in t["truths"]),
