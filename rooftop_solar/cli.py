@@ -46,6 +46,7 @@ def _setup(args: argparse.Namespace):
     rules = FireCodeRules(
         section_gap_ft=args.section_gap_ft,
         residential_setback_ft=args.pitched_setback_in / 12.0,
+        pitched_setback_mode=args.pitched_setback_mode,
         residential_alternative_for_pitched_r2=not args.no_residential_alternative,
     )
     design = DesignConfig(
@@ -237,14 +238,16 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
 
     first = [True]
 
-    def run(ratio: float, setback_in: float | None = None):
+    def run(ratio: float, setback_in: float | None = None, mode: str | None = None):
         # Progress on the first pass (the slow one: lookups); later passes reuse the caches.
         progress = (lambda msg: print(msg, flush=True)) if first[0] else (lambda *_: None)
         if not first[0]:
-            what = f"pitched setback {setback_in:g} in" if setback_in is not None else f"panel-yield cutoff {ratio:g}"
+            what = (f"pitched setback {setback_in:g} in, {mode}" if setback_in is not None
+                    else f"panel-yield cutoff {ratio:g}")
             print(f"Re-sizing at {what}...", flush=True)
         first[0] = False
-        rules = (dataclasses.replace(geometric.rules, residential_setback_ft=setback_in / 12.0)
+        rules = (dataclasses.replace(geometric.rules, residential_setback_ft=setback_in / 12.0,
+                                     pitched_setback_mode=mode)
                  if setback_in is not None else geometric.rules)
         geo = GeometricEstimator(rules, dataclasses.replace(geometric.design, min_panel_energy_ratio=ratio))
         outcomes = size_sites(
@@ -267,16 +270,23 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
     # Report the configured cutoff, not the best fit: reference designs are
     # cost-trimmed, so fitting them would bias absolute MaxFit low.
     ratio, outcomes, rows, _ = next(t for t in sweep if t[0] == args.min_panel_energy_ratio)
-    # Pitched-roof setback sweep at the default cutoff (pitched-roof MaxFit sites only).
-    setbacks = sorted({float(x) for x in args.pitched_setbacks.split(",") if x.strip()} | {args.pitched_setback_in}) \
-        if args.pitched_setbacks else []
+    # Pitched-roof setback sweep at the default cutoff (pitched-roof MaxFit sites
+    # only): each setback distance with the configured mode, then each mode at
+    # the configured distance.
+    default = (args.pitched_setback_in, args.pitched_setback_mode)
+    variants = []
+    if args.pitched_setbacks:
+        variants = [(float(x), args.pitched_setback_mode) for x in args.pitched_setbacks.split(",") if x.strip()]
+    if args.pitched_setback_modes:
+        variants += [(args.pitched_setback_in, m.strip()) for m in args.pitched_setback_modes.split(",") if m.strip()]
+    variants = sorted(set(variants) | ({default} if variants else set()), key=lambda v: (v[1], v[0]))
     setback_sweep = []
-    for sb in setbacks:
-        srows = rows if sb == args.pitched_setback_in else run(args.min_panel_energy_ratio, sb)[1]
+    for sb, mode in variants:
+        srows = rows if (sb, mode) == default else run(args.min_panel_energy_ratio, sb, mode)[1]
         errs = [float(r["tool_err"].rstrip("%")) / 100 for r in srows
                 if r["kind"] == "maxfit" and r["roof"] in ("pitched", "mixed") and r["tool_err"]]
-        setback_sweep.append((sb, errs, {r["site"]: r["tool_err"] for r in srows if r["roof"] in ("pitched", "mixed")
-                                         and r["kind"] == "maxfit"}))
+        setback_sweep.append(((sb, mode), errs, {r["site"]: r["tool_err"] for r in srows
+                                                 if r["roof"] in ("pitched", "mixed") and r["kind"] == "maxfit"}))
     _write_csv(rows, args.out, "site")
     if args.layouts:
         write_layouts([e.primary for o in outcomes for e in o._counted() if e.primary], args.layouts)
@@ -303,14 +313,14 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
             print(f"{r:7.2f} {hits:>5} of {len(errs):<3} {med_abs:>12.0%} {med:>+11.0%}{mark}")
     if len(setback_sweep) > 1:
         print("\nPitched-roof setback sweep (MaxFit sites with mostly pitched roofs, standard column):")
-        print(f"{'setback':>8} {'within 10%':>11} {'median |err|':>13} {'median err':>11}  per site")
-        for sb, errs, per in setback_sweep:
+        print(f"{'setback':>22} {'within 10%':>11} {'median |err|':>13} {'median err':>11}  per site")
+        for (sb, mode), errs, per in setback_sweep:
             hits = sum(abs(e) <= 0.10 for e in errs)
             med_abs = statistics.median([abs(e) for e in errs]) if errs else float("nan")
             med = statistics.median(errs) if errs else float("nan")
-            mark = " <- default" if sb == args.pitched_setback_in else ""
+            mark = " <- default" if (sb, mode) == default else ""
             sites_txt = ", ".join(f"{k[:14]} {v}" for k, v in per.items())
-            print(f"{sb:6g} in {hits:>5} of {len(errs):<3} {med_abs:>12.0%} {med:>+11.0%}{mark}  {sites_txt}")
+            print(f"{sb:4g} in {mode:>14} {hits:>5} of {len(errs):<3} {med_abs:>12.0%} {med:>+11.0%}{mark}  {sites_txt}")
     _snapshots(args, outcomes)
     print(f"\nFull report: {args.out}")
     return 0
@@ -419,6 +429,9 @@ def build_parser() -> argparse.ArgumentParser:
     design.add_argument("--pitched-setback-in", type=float, default=18.0,
                         help="setback from pitched roof-plane edges in inches (18: best match to Ivy's pitched "
                              "designs in the Oct 2026 accuracy sweep; 36 where the AHJ requires it)")
+    design.add_argument("--pitched-setback-mode", choices=["ridge", "ridge_pathway", "ring"], default="ridge_pathway",
+                        help="where the pitched setback applies: below the ridge only; ridge plus a 36 in "
+                             "eave-to-ridge walkway on each plane (CRC R324.6); or all round each plane")
     design.add_argument("--carport-min-kw", type=float, default=15.0,
                         help="count a detached garage or carport only if at least this many kW fit")
     design.add_argument("--no-residential-alternative", action="store_true", help="apply commercial rules to pitched R-2 roofs")
@@ -450,6 +463,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--campus-radius-m", type=float, default=0.0)
     a.add_argument("--pitched-setbacks", default="0,18,36",
                    help="also size at these pitched-roof setbacks (inches) and compare; '' to skip")
+    a.add_argument("--pitched-setback-modes", default="ridge,ridge_pathway,ring",
+                   help="also size with these pitched setback modes at --pitched-setback-in and compare; '' to skip")
     a.add_argument("--energy-ratios", default="0,0.6,0.7,0.8,0.9",
                    help="comma-separated panel-yield cutoffs to compare (uses saved Google answers, no extra cost)")
     a.set_defaults(func=cmd_accuracy)

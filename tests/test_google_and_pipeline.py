@@ -300,6 +300,12 @@ def test_pitched_layout_kept_inside_plane_edge_setback():
     assert none.module_count > r18.module_count >= r36.module_count > 0  # panels pulled back from the ridge
     assert r36.details["pitched_setback_kw"] > 0 and none.details["pitched_setback_kw"] == 0
 
+    by_mode = lambda mode: GoogleFilteredEstimator(GeometricEstimator(
+        FireCodeRules(residential_setback_ft=1.5, pitched_setback_mode=mode), design)).estimate(b, ins).module_count
+    ridge, pathway, ring = by_mode("ridge"), by_mode("ridge_pathway"), by_mode("ring")
+    assert none.module_count > ridge > pathway > 0  # the eave-to-ridge walkway takes a column of panels per plane
+    assert ridge > ring > 0
+
 
 def test_pitched_r2_uses_plane_setback_not_commercial_perimeter():
     from rooftop_solar.fire_code import FireCodeRules
@@ -342,8 +348,8 @@ def test_pitched_setback_trims_only_the_ridge_row():
     b = Building("a", centered_box_ft(200, 100), Occupancy.R2)
     ins = GoogleInsights.from_response(google_response(pitch=25.0))  # one south-facing plane, ridge on the north
     design = DesignConfig(min_panel_energy_ratio=0.0)
-    est = lambda inches: GoogleFilteredEstimator(GeometricEstimator(FireCodeRules(residential_setback_ft=inches / 12),
-                                                                    design)).estimate(b, ins)
+    est = lambda inches: GoogleFilteredEstimator(GeometricEstimator(FireCodeRules(
+        residential_setback_ft=inches / 12, pitched_setback_mode="ridge"), design)).estimate(b, ins)
     none, r18 = est(0), est(18)
     lost = none.details["google_panels_kept"] - r18.details["google_panels_kept"]
     per_row = sum(1 for p in ins.panels if abs(p.lat - max(q.lat for q in ins.panels)) < 1e-7)

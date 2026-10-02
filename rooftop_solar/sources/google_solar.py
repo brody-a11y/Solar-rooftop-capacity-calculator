@@ -471,20 +471,22 @@ class GoogleFilteredEstimator:
         return int(sum(gap.area for gap in gaps) * flat_density // design.module.area_m2), gaps
 
     def _pitched_setback_zones(self, insights: GoogleInsights, rects, flat_threshold: float) -> dict:
-        """Per pitched roof segment, the part of Google's array at least
-        `pitched_setback` down-slope from its top (ridge) edge.
+        """Per pitched roof segment, the part of Google's array that clears the
+        pitched-roof fire-code setbacks.
 
-        Google doesn't return roof-plane outlines; the array's highest row
-        stands in for the ridge. Only the ridge side is set back (IFC 1205.2 /
-        CRC R324.6: 18 in each side of a ridge, 36 in for larger arrays); eaves
-        and rakes are left as Google placed them. Trimming the whole array
-        outline instead cost small hip-roof planes most of their panels
-        (Firenze -50%, Union Place -46% in the Oct 2026 accuracy run).
+        Google doesn't return roof-plane outlines; the array on each plane stands
+        in for it (its highest row for the ridge). Modes (rules.pitched_setback_mode):
+        "ridge": `residential_setback_ft` below the ridge only; "ridge_pathway"
+        (default): that plus a `pathway_ft` eave-to-ridge walkway along one side
+        of each plane's array (CRC R324.6, IFC 1205.2.1); "ring": the setback all
+        round the array. Oct 2026 accuracy run: ridge only left pitched campuses
+        +57% to +123% over Ivy's designs, the ring -14% to -50%.
         """
-        setback = self.geometric.rules.residential_setback_ft * FT
+        rules = self.geometric.rules
+        setback, mode = rules.residential_setback_ft * FT, rules.pitched_setback_mode
         if setback <= 0:
             return {}
-        by_seg: dict[int, list] = {}
+        by_seg: dict[int, tuple] = {}
         for p, rect in zip(insights.panels, rects):
             seg = _segment(insights, p)
             if seg.pitch_deg >= flat_threshold:
@@ -492,14 +494,23 @@ class GoogleFilteredEstimator:
         zones = {}
         big = 1e4
         for idx, (az, rs) in by_seg.items():
-            dx, dy = math.sin(math.radians(az)), math.cos(math.radians(az))  # down-slope, local x east / y north
-            top = min(x * dx + y * dy for r in rs for x, y in r.exterior.coords)
-            s0, s1 = top + setback, top + setback + big
-            px, py = dy, -dx  # along the ridge
-            keep = Polygon([(s0 * dx + big * px, s0 * dy + big * py), (s0 * dx - big * px, s0 * dy - big * py),
-                            (s1 * dx - big * px, s1 * dy - big * py), (s1 * dx + big * px, s1 * dy + big * py)])
             try:
-                zones[idx] = unary_union(rs).buffer(0.3, join_style="mitre").intersection(keep)
+                array = unary_union(rs).buffer(0.3, join_style="mitre")
+                if mode == "ring":
+                    zones[idx] = unary_union(rs).buffer(0.3, join_style="mitre").buffer(-0.3 - setback, join_style="mitre")
+                    continue
+                dx, dy = math.sin(math.radians(az)), math.cos(math.radians(az))  # down-slope, local x east / y north
+                px, py = dy, -dx  # along the ridge
+                band = lambda ux, uy, vx, vy, a, b: Polygon([  # points with a <= (u . pt) <= b
+                    (a * ux + big * vx, a * uy + big * vy), (a * ux - big * vx, a * uy - big * vy),
+                    (b * ux - big * vx, b * uy - big * vy), (b * ux + big * vx, b * uy + big * vy)])
+                pts = [c for r in rs for c in r.exterior.coords]
+                top = min(x * dx + y * dy for x, y in pts)
+                zone = array.intersection(band(dx, dy, px, py, top + setback, top + big))
+                if mode == "ridge_pathway":
+                    end = max(x * px + y * py for x, y in pts)
+                    zone = zone.intersection(band(px, py, dx, dy, end - big, end - rules.pathway_ft * FT))
+                zones[idx] = zone
             except GEOSException:
                 continue
         return zones

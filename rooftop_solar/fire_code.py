@@ -47,6 +47,11 @@ class FireCodeRules:
     max_array_section_ft: float = 150.0
     section_gap_ft: float = 4.0  # use 8.0 where the AHJ requires option 2.1
     residential_setback_ft: float = 3.0  # R-3 36 in pathway, applied to every plane edge
+    # Google pitched layouts: "ridge" = setback below the ridge only; "ridge_pathway"
+    # = that plus a pathway_ft eave-to-ridge walkway on each plane with panels
+    # (CRC R324.6 / IFC 1205.2.1); "ring" = setback all round each plane's array.
+    pitched_setback_mode: str = "ridge_pathway"
+    pathway_ft: float = 3.0
     # Apply the R-3 rules to pitched R-2 roofs (IFC 1205.3 exception, AHJ approval).
     residential_alternative_for_pitched_r2: bool = True
     clearances_ft: dict = field(default_factory=lambda: dict(DEFAULT_CLEARANCES_FT))
