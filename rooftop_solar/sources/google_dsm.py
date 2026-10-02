@@ -56,11 +56,15 @@ def detect_equipment(dsm: np.ndarray, roof_mask: np.ndarray, pixel_m: float, min
 
 
 def screen_equipment(items: list[Polygon], flat_pts: np.ndarray, pitched_pts: np.ndarray, near_m: float = 5.0,
-                     min_width_m: float = 0.6, max_aspect: float = 4.0, small_m2: float = 0.5) -> list[tuple[Polygon, str]]:
+                     min_width_m: float = 0.6, max_aspect: float = 4.0, small_m2: float = 0.5,
+                     min_compactness: float = 0.3, max_area_m2: float = 40.0) -> list[tuple[Polygon, str]]:
     """Keep detections that look like equipment on a flat roof, with a kind.
 
     Coordinates are local metres. Dropped: long thin objects (parapets,
-    railings, walls between rowhouse roofs, the ridges of pitched roofs) and
+    railings, walls between rowhouse roofs, the ridges of pitched roofs); loops
+    and bands that trace roof edges, parapets and roof-level steps (low
+    compactness 4*pi*area/perimeter^2, which is 0.79 for a square and near 0 for
+    a band); anything over `max_area_m2` (roof sections, penthouses); and
     objects whose neighbourhood holds more of Google's pitched-roof panels than
     flat-roof ones (ridges, hips, dormers). Items under `small_m2` are vents and
     pipes ("small_equipment", 1 ft clearance); larger ones are "equipment".
@@ -71,6 +75,8 @@ def screen_equipment(items: list[Polygon], flat_pts: np.ndarray, pitched_pts: np
             continue
         short, long_, _angle = principal_axes(g)
         if short < min_width_m or (long_ > 4.0 and long_ / max(short, 1e-6) > max_aspect):
+            continue
+        if g.area > max_area_m2 or 4 * np.pi * g.area / max(g.length, 1e-6) ** 2 < min_compactness:
             continue
         c = np.array([g.centroid.x, g.centroid.y])
         near = lambda pts: int((np.hypot(*(pts - c).T) <= near_m).sum()) if len(pts) else 0

@@ -233,3 +233,14 @@ def test_snapshot_draws_layers_on_imagery(tmp_path):
     assert BLUE in colors and RED in colors and YELLOW in colors and (90, 90, 90) in colors
     # the panel sits at local (-4, -1.5): 4 m west, 1.5 m south of the image centre
     assert tuple(img[120 + 6, 120 - 16]) == BLUE
+
+
+def test_screen_drops_loops_tracing_roof_edges_and_large_sections():
+    from rooftop_solar.sources.google_dsm import screen_equipment
+
+    flat = np.array([[x, y] for x in range(-20, 21, 2) for y in range(-20, 21, 2)], float)
+    edge_loop = box(-15, -10, 15, 10).difference(box(-14.4, -9.4, 14.4, 9.4))  # 0.6 m band along a parapet
+    step = box(-5, -5, 3, 3)  # 64 m2 raised roof section
+    l_shape = box(0, 0, 3, 1).union(box(0, 0, 1, 3))  # two rooftop units side by side
+    kept = screen_equipment([edge_loop, step, l_shape, box(5, 5, 6.2, 6.2)], flat, np.empty((0, 2)))
+    assert len(kept) == 2 and all(k == "equipment" for _g, k in kept)
