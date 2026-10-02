@@ -434,9 +434,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "eave-to-ridge walkway on each plane (CRC R324.6); or all round each plane")
     design.add_argument("--carport-min-kw", type=float, default=15.0,
                         help="count a detached garage or carport only if at least this many kW fit")
-    design.add_argument("--max-nearby-parcels", type=int, default=1000,
+    design.add_argument("--max-nearby-parcels", type=int, default=0,
                         help="single-family rental communities: read up to this many parcels around the address "
-                             "to find the owner's other lots (Regrid bills per parcel returned; 0 = off)")
+                             "to find the owner's other lots. Off by default: Regrid bills every parcel returned "
+                             "beyond the plan's monthly records, so 1000 can cost $100+ per community")
     design.add_argument("--no-residential-alternative", action="store_true", help="apply commercial rules to pitched R-2 roofs")
 
     s = sub.add_parser("size", parents=[design], help="size every building in a KML/KMZ or GeoJSON file")

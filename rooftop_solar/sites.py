@@ -313,7 +313,7 @@ def size_sites(
     carport_min_energy_ratio: float = 0.8,
     carport_min_kw: float = 15.0,
     max_owner_lookups: int = 10,
-    max_nearby_parcels: int = 1000,
+    max_nearby_parcels: int = 0,
     equipment_client=None,
     stale_imagery_years: float = 6.0,
     min_imagery_coverage: float = 0.25,

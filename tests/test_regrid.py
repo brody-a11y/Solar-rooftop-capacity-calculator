@@ -376,7 +376,8 @@ def test_single_family_community_adds_same_owner_lots(footprints):
     lon, lat = ll(220, 7)
     parcels = _LotParcels()
     site = Site("Altura", lat=lat, lon=lon, occupancy=Occupancy.R3, units=40)
-    out = size_sites([site], footprints, GeometricEstimator(), workers=1, progress=lambda *_: None, parcels=parcels)[0]
+    out = size_sites([site], footprints, GeometricEstimator(), workers=1, progress=lambda *_: None, parcels=parcels,
+                     max_nearby_parcels=1000)[0]
     assert sorted(m.overture_id for m in out.matches) == ["apt-a", "apt-b"]  # not the neighbour's house
     assert len(parcels.near_calls) == 1 and 150 <= parcels.near_calls[0] <= 1000
     assert any(r.startswith("added_1_buildings_from_1_same_owner_lots") for r in out.reasons)
