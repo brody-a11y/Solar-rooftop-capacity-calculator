@@ -471,27 +471,35 @@ class GoogleFilteredEstimator:
         return int(sum(gap.area for gap in gaps) * flat_density // design.module.area_m2), gaps
 
     def _pitched_setback_zones(self, insights: GoogleInsights, rects, flat_threshold: float) -> dict:
-        """Per pitched roof segment, the area at least `pitched_setback` inside the
-        edge of Google's array on that plane.
+        """Per pitched roof segment, the part of Google's array at least
+        `pitched_setback` down-slope from its top (ridge) edge.
 
-        Google doesn't return roof-plane outlines, and on pitched roofs its
-        layouts run close to the plane edges (ridge, eaves, hips, rakes). The
-        array's own outline stands in for the plane, so panels within the setback
-        of it are dropped (IFC 1205.2: 36 in, 18 in where the AHJ allows). An
-        approximation: where Google already left a margin this over-trims.
+        Google doesn't return roof-plane outlines; the array's highest row
+        stands in for the ridge. Only the ridge side is set back (IFC 1205.2 /
+        CRC R324.6: 18 in each side of a ridge, 36 in for larger arrays); eaves
+        and rakes are left as Google placed them. Trimming the whole array
+        outline instead cost small hip-roof planes most of their panels
+        (Firenze -50%, Union Place -46% in the Oct 2026 accuracy run).
         """
         setback = self.geometric.rules.residential_setback_ft * FT
         if setback <= 0:
             return {}
         by_seg: dict[int, list] = {}
         for p, rect in zip(insights.panels, rects):
-            if _segment(insights, p).pitch_deg >= flat_threshold:
-                by_seg.setdefault(p.segment_index, []).append(rect)
+            seg = _segment(insights, p)
+            if seg.pitch_deg >= flat_threshold:
+                by_seg.setdefault(p.segment_index, (seg.azimuth_deg, []))[1].append(rect)
         zones = {}
-        for idx, rs in by_seg.items():
+        big = 1e4
+        for idx, (az, rs) in by_seg.items():
+            dx, dy = math.sin(math.radians(az)), math.cos(math.radians(az))  # down-slope, local x east / y north
+            top = min(x * dx + y * dy for r in rs for x, y in r.exterior.coords)
+            s0, s1 = top + setback, top + setback + big
+            px, py = dy, -dx  # along the ridge
+            keep = Polygon([(s0 * dx + big * px, s0 * dy + big * py), (s0 * dx - big * px, s0 * dy - big * py),
+                            (s1 * dx - big * px, s1 * dy - big * py), (s1 * dx + big * px, s1 * dy + big * py)])
             try:
-                array = unary_union(rs).buffer(0.3, join_style="mitre").buffer(-0.3, join_style="mitre")
-                zones[idx] = array.buffer(-setback, join_style="mitre")
+                zones[idx] = unary_union(rs).buffer(0.3, join_style="mitre").intersection(keep)
             except GEOSException:
                 continue
         return zones

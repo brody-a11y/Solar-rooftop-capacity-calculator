@@ -334,3 +334,17 @@ def test_census_result_cached_under_google_is_retried(tmp_path, monkeypatch):
     monkeypatch.setattr(geocode_mod.requests.Session, "get", lambda self, url, params=None, timeout=None: R())
     r = Geocoder("google", api_key="k", cache_path=cache).geocode("1 Main St")
     assert r.source == "google" and r.lat == 34.2
+
+
+def test_pitched_setback_trims_only_the_ridge_row():
+    from rooftop_solar.fire_code import FireCodeRules
+
+    b = Building("a", centered_box_ft(200, 100), Occupancy.R2)
+    ins = GoogleInsights.from_response(google_response(pitch=25.0))  # one south-facing plane, ridge on the north
+    design = DesignConfig(min_panel_energy_ratio=0.0)
+    est = lambda inches: GoogleFilteredEstimator(GeometricEstimator(FireCodeRules(residential_setback_ft=inches / 12),
+                                                                    design)).estimate(b, ins)
+    none, r18 = est(0), est(18)
+    lost = none.details["google_panels_kept"] - r18.details["google_panels_kept"]
+    per_row = sum(1 for p in ins.panels if abs(p.lat - max(q.lat for q in ins.panels)) < 1e-7)
+    assert 0 < lost <= per_row  # the top (ridge) row at most; eave and side rows stay
