@@ -30,6 +30,7 @@ mkdir -p "$HOME_DIR"
 "$PY" -m venv "$VENV" || finish 1
 "$VENV/bin/python" -m pip install --quiet --upgrade pip || finish 1
 "$VENV/bin/python" -m pip install --quiet ".[dev]" || finish 1
+touch "$HOME_DIR/installed.stamp"  # the run scripts reinstall when the code is newer than this
 
 echo "Running self-test..."
 if "$VENV/bin/python" -m pytest -q -p no:cacheprovider; then

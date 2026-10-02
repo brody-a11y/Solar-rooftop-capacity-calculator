@@ -14,6 +14,15 @@ if [ ! -x "$CLI" ]; then
   finish 1
 fi
 
+# Pulled a newer version in GitHub Desktop? Update the installed tool first.
+REPO="$(cd "$(dirname "$0")" && pwd)"
+if [ -n "$(find "$REPO/rooftop_solar" "$REPO/pyproject.toml" -newer "$HOME_DIR/installed.stamp" -print -quit 2>/dev/null)" ] \
+   || [ ! -f "$HOME_DIR/installed.stamp" ]; then
+  echo "Updating to the version you pulled..."
+  "$HOME_DIR/venv/bin/python" -m pip install --quiet "$REPO" && touch "$HOME_DIR/installed.stamp"
+fi
+
+
 echo "Drag the truth file (e.g. truth_drive.json) into this window, then press Return:"
 read -r IN
 IN="$(printf '%s' "$IN" | sed -e 's/[[:space:]]*$//' -e "s/^'\(.*\)'$/\1/" -e 's/\\\(.\)/\1/g')"
