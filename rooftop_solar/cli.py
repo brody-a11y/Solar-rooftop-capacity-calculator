@@ -197,7 +197,7 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
         search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
         google_max_points=args.google_max_points, unit_addresses=_unit_addresses(args, sites),
         parcels=_parcels(args), include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio,
-        carport_min_kw=args.carport_min_kw, max_nearby_parcels=args.max_nearby_parcels,
+        carport_min_kw=args.carport_min_kw, community_sample=args.community_sample,
         equipment_client=_equipment(args),
     )
     site_rows = [o.row() for o in outcomes]
@@ -255,7 +255,7 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
             search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
             google_max_points=args.google_max_points, unit_addresses=units, parcels=parcels,
             include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio,
-            carport_min_kw=args.carport_min_kw, max_nearby_parcels=args.max_nearby_parcels, progress=progress,
+            carport_min_kw=args.carport_min_kw, community_sample=args.community_sample, progress=progress,
             equipment_client=equipment,
         )
         return outcomes, compare(truth, outcomes, geo.design.module.watts_dc)
@@ -434,10 +434,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "eave-to-ridge walkway on each plane (CRC R324.6); or all round each plane")
     design.add_argument("--carport-min-kw", type=float, default=15.0,
                         help="count a detached garage or carport only if at least this many kW fit")
-    design.add_argument("--max-nearby-parcels", type=int, default=0,
-                        help="single-family rental communities: read up to this many parcels around the address "
-                             "to find the owner's other lots. Off by default: Regrid bills every parcel returned "
-                             "beyond the plan's monthly records, so 1000 can cost $100+ per community")
+    design.add_argument("--community-sample", type=int, default=10,
+                        help="single-family rental communities (input Units far above the homes found): size this "
+                             "many nearby same-owner buildings and scale kW per home to the unit count (0 = off; "
+                             "each ownership check is one Regrid record)")
     design.add_argument("--no-residential-alternative", action="store_true", help="apply commercial rules to pitched R-2 roofs")
 
     s = sub.add_parser("size", parents=[design], help="size every building in a KML/KMZ or GeoJSON file")

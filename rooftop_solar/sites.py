@@ -175,6 +175,7 @@ class SiteOutcome:
             "parcel_id": getattr(self.parcel, "parcel_id", ""),
             "parcel_acres": getattr(self.parcel, "acres", "") or "",
             "buildings": len(self.buildings),
+            "units_in_input": self.site.units or "",
             "units_in_address_data": self.listed_units or "",
             "units_in_parcel_records": self.parcel_units or "",
             "dc_kw": round(self.dc_kw, 2),
@@ -313,7 +314,7 @@ def size_sites(
     carport_min_energy_ratio: float = 0.8,
     carport_min_kw: float = 15.0,
     max_owner_lookups: int = 10,
-    max_nearby_parcels: int = 0,
+    community_sample: int = 10,
     equipment_client=None,
     stale_imagery_years: float = 6.0,
     min_imagery_coverage: float = 0.25,
@@ -457,42 +458,16 @@ def size_sites(
             if other_owner:
                 o.reasons.append(f"skipped_{other_owner}_parcels_other_owner_under_unit_addresses")
 
-    # Single-family rental communities (build-to-rent, townhomes on their own
-    # lots): the address is one lot, the property is every nearby lot with the
-    # same owner. Triggered when the input lists far more homes than the
-    # parcels found so far hold buildings.
-    if parcels is not None and max_nearby_parcels > 0 and hasattr(parcels, "parcels_near"):
+    # Single-family rental communities (build-to-rent houses or townhomes on
+    # their own lots): the address is one lot, the property is hundreds. Size
+    # a sample of the nearest homes, checking each one's owner (one Regrid
+    # record apiece), and scale kW per home to the unit count in the input.
+    community: dict[str, list[int]] = {}  # site id -> homes in each found building
+    if community_sample > 0:
         for o in outcomes:
-            units = o.site.units
-            homes = [m for m in found.get(o.site.id, []) if structure_kind(m) == "building"]
-            if o.site.id not in parcel_sites or not units or units < 10 or len(homes) * 3 >= units:
-                continue
-            house_sized = bool(homes) and sorted(_fp_area_m2(m.footprint) for m in homes)[len(homes) // 2] < 300.0
-            if o.site.occupancy != Occupancy.R3 and not house_sized:  # apartments: units share buildings
-                continue
-            if o.parcel.units and o.parcel.units * 2 >= units:  # an apartment parcel, not a lot
-                continue
-            radius = min(1000.0, max(150.0, 1.6 * math.sqrt(units * 450.0 / math.pi)))
-            try:
-                near = parcels.parcels_near(o.geocode.lat, o.geocode.lon, radius, max_nearby_parcels)
-            except Exception as exc:
-                o.reasons.append(f"nearby_parcel_lookup_failed:{redact(exc)[:40]}")
-                continue
-            same = [p for p in near if same_owner(p, o.parcel) and not p.geometry.equals(o.parcel.geometry)]
-            if not same:
-                o.reasons.append(f"no_same_owner_lots_within_{radius:.0f}m")
-                continue
-            have = {m.overture_id for m in found.get(o.site.id, [])}
-            added = 0
-            for ms in footprints.in_polygons({f"{o.site.id}\x00{i}": p.geometry for i, p in enumerate(same)}).values():
-                for m in ms:
-                    if m.overture_id not in have and (include_carports or structure_kind(m) == "building"):
-                        found[o.site.id].append(m)
-                        have.add(m.overture_id)
-                        added += 1
-            o.reasons.append(f"added_{added}_buildings_from_{len(same)}_same_owner_lots_within_{radius:.0f}m")
-            if len(near) >= max_nearby_parcels:
-                o.reasons.append(f"nearby_parcels_capped_at_{max_nearby_parcels}_some_lots_may_be_missed")
+            sample = _community_sample(o, found, footprints, parcels, unit_addresses, community_sample)
+            if sample is not None:
+                found[o.site.id], community[o.site.id] = sample
 
     # Otherwise: buildings under the county's per-unit address points.
     if unit_addresses is not None and campus_m == 0:
@@ -611,7 +586,93 @@ def size_sites(
                 e.reasons.append(f"outline_only_scaled_{outline_only_factor:g}")
     for o in outcomes:
         o.manual_review = imagery_concerns(o, stale_imagery_years, min_imagery_coverage, today or date.today())
+        if o.site.id in community:
+            _scale_to_units(o, community[o.site.id], min_sample=min(5, community_sample))
     return outcomes
+
+
+def _community_sample(o: SiteOutcome, found: dict, footprints, parcels, unit_addresses, n: int,
+                      unit_m2: float = 100.0):
+    """(buildings, homes per building) for a single-family community whose
+    input unit count far exceeds the homes found, else None."""
+    units = o.site.units
+    if not o.geocode or not units or units < 10:
+        return None
+    have = [m for m in found.get(o.site.id, []) if structure_kind(m) == "building"]
+    if o.site.occupancy != Occupancy.R3 and not (have and _median([_fp_area_m2(m.footprint) for m in have]) < 300.0):
+        return None  # apartments: units share large buildings
+    zipcode = (_address_with_zip(o).rsplit(" ", 1)[-1:] or [""])[0]
+    zipcode = zipcode if re.fullmatch(r"\d{5}", zipcode) else ""
+
+    def homes(ms):
+        counted = unit_addresses.homes_in(zipcode, [m.footprint for m in ms]) \
+            if unit_addresses is not None and hasattr(unit_addresses, "homes_in") and zipcode else [0] * len(ms)
+        # No address points on a building: a house, or a townhome row of ~unit_m2 per home.
+        return [c or max(1, round(_fp_area_m2(m.footprint) / unit_m2)) if _fp_area_m2(m.footprint) >= 300 else c or 1
+                for c, m in zip(counted, ms)]
+
+    have_homes = homes(have) if have else []
+    if sum(have_homes) * 2 >= units:
+        return None
+    radius = min(1000.0, max(150.0, 1.6 * math.sqrt(units * 450.0 / math.pi)))
+    near = footprints.find({o.site.id: (o.geocode.lon, o.geocode.lat)}, search_m=radius, campus_m=radius).get(o.site.id, [])
+    ids = {m.overture_id for m in found.get(o.site.id, [])}
+    cands = sorted((m for m in near if m.overture_id not in ids and structure_kind(m) == "building"
+                    and _fp_area_m2(m.footprint) <= 2000.0), key=lambda m: m.distance_m)
+    owner = o.parcel if parcels is not None else None
+    picked, checked, other = [], 0, 0
+    for m in cands:
+        if len(picked) + len(have) >= n or checked >= 3 * n:
+            break
+        if owner is not None:
+            checked += 1
+            c = m.footprint.representative_point()
+            try:
+                p = parcels.parcel_at(c.y, c.x)
+            except Exception:
+                continue
+            if not same_owner(p, owner):
+                other += 1
+                continue
+        picked.append(m)
+    out = found.get(o.site.id, []) + picked
+    o.reasons.append(f"community_sampled_{len(have) + len(picked)}_buildings_within_{radius:.0f}m"
+                     + (f"_skipped_{other}_other_owners" if other else "")
+                     + ("" if owner is not None else "_ownership_not_checked"))
+    is_home = [structure_kind(m) == "building" for m in out]
+    counts = iter(homes([m for m, h in zip(out, is_home) if h]))
+    return out, [next(counts) if h else 0 for h in is_home]
+
+
+def _median(xs: list[float]) -> float:
+    xs = sorted(xs)
+    return xs[len(xs) // 2] if xs else 0.0
+
+
+def _scale_to_units(o: SiteOutcome, homes_per_building: list[int], min_sample: int) -> None:
+    """Scale the sampled community's rooftop kW to the input's unit count."""
+    if len(homes_per_building) != len(o.estimates):
+        return
+    rows = [(e, h) for (b, e, c), h in zip(o._triples(), homes_per_building) if c and b.structure == "building" and h]
+    homes, kw = sum(h for _e, h in rows), sum(e.dc_kw for e, _h in rows)
+    if not homes or homes >= o.site.units:
+        return
+    factor = o.site.units / homes
+    for e, _h in rows:
+        _scale_estimate(e, factor)
+    o.reasons.append(f"community_{o.site.units}_homes_from_{homes}_sampled_{kw / homes:.1f}_kw_per_home")
+    if len(rows) < min_sample:
+        o.manual_review.append(f"community_sized_from_only_{len(rows)}_buildings")
+
+
+def _scale_estimate(e: SiteEstimate, factor: float) -> None:
+    e.dc_kw *= factor
+    e.raw_kw *= factor
+    for r in {id(r): r for r in (e.primary, e.geometric, e.google) if r is not None}.values():
+        r.dc_kw *= factor
+        for k, v in list(r.details.items()):
+            if k.endswith("_kw") and isinstance(v, (int, float)) and not isinstance(v, bool):
+                r.details[k] = v * factor
 
 
 def _address_with_zip(o: SiteOutcome) -> str:

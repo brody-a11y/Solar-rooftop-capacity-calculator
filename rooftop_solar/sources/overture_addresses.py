@@ -221,3 +221,27 @@ class OvertureAddresses:
         if top == 0:
             return []
         return [r for sc, r in scored if sc == top]
+
+    def homes_in(self, zipcode: str, footprints: list, margin_m: float = 3.0) -> list[int]:
+        """Distinct addresses (number, street, unit) on or within `margin_m` of each
+        lon/lat footprint: the homes in a townhome row, 1 for a house. 0 where
+        the address data has none."""
+        import shapely
+        from shapely.geometry import Polygon
+
+        from ..geometry import LocalFrame
+
+        table = self._zip_table(zipcode) if zipcode else None
+        if table is None or table.num_rows == 0 or not footprints:
+            return [0] * len(footprints)
+        lon, lat = table["lon"].to_numpy(zero_copy_only=False), table["lat"].to_numpy(zero_copy_only=False)
+        keys = list(zip(table["number"].to_pylist(), table["street"].to_pylist(), table["unit"].to_pylist()))
+        out = []
+        for fp in footprints:
+            frame = LocalFrame.for_geometry(fp)
+            area = frame.to_lonlat(frame.to_local(fp).buffer(margin_m))
+            x0, y0, x1, y1 = area.bounds
+            near = (lon >= x0) & (lon <= x1) & (lat >= y0) & (lat <= y1)
+            idx = [i for i in near.nonzero()[0] if shapely.contains_xy(area, lon[i], lat[i])]
+            out.append(len({keys[i] for i in idx}))
+        return out

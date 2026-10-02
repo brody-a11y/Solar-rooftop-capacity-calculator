@@ -357,52 +357,68 @@ def _owned(poly, owner):
 class _LotParcels:
     """Single-family lots: the site's lot (apt-a), a same-owner lot (apt-b), a neighbour's lot (unknown)."""
 
+    other_owner_everywhere = False
+
     def __init__(self):
-        self.near_calls = []
+        self.calls = 0
 
     def parcel_at(self, lat, lon):
+        self.calls += 1
+        x, y = FRAME.point_to_local(lon, lat)
+        if x > 300 or (self.other_owner_everywhere and self.calls > 1):
+            return _owned(box(390, -10, 440, 30), "Jane Smith")
+        if y > 25:
+            return _owned(box(190, 25, 250, 55), "AHV COMMUNITIES, L.L.C.")
         return _owned(box(190, -10, 250, 22), "AHV Communities LLC")
 
-    def parcels_near(self, lat, lon, radius_m, limit):
-        self.near_calls.append(radius_m)
-        return [_owned(box(190, -10, 250, 22), "AHV Communities LLC"),
-                _owned(box(190, 25, 250, 55), "AHV COMMUNITIES, L.L.C."),
-                _owned(box(390, -10, 440, 30), "Jane Smith")]
+
+class _Homes:
+    """Address data: apt-a holds 4 townhomes, apt-b 2."""
+
+    def address_records(self, address):
+        return []
+
+    def homes_in(self, zipcode, footprints):
+        return [4 if FRAME.to_local(f).centroid.y < 20 else 2 for f in footprints]
 
 
-def test_single_family_community_adds_same_owner_lots(footprints):
+def test_community_sizes_same_owner_sample_and_scales_to_units(footprints):
     from rooftop_solar.models import Occupancy
 
     lon, lat = ll(220, 7)
     parcels = _LotParcels()
-    site = Site("Altura", lat=lat, lon=lon, occupancy=Occupancy.R3, units=40)
+    site = Site("Altura", address="1 Oak St, San Antonio, TX 78233", lat=lat, lon=lon, occupancy=Occupancy.R3, units=60)
     out = size_sites([site], footprints, GeometricEstimator(), workers=1, progress=lambda *_: None, parcels=parcels,
-                     max_nearby_parcels=1000)[0]
-    assert sorted(m.overture_id for m in out.matches) == ["apt-a", "apt-b"]  # not the neighbour's house
-    assert len(parcels.near_calls) == 1 and 150 <= parcels.near_calls[0] <= 1000
-    assert any(r.startswith("added_1_buildings_from_1_same_owner_lots") for r in out.reasons)
+                     unit_addresses=_Homes())[0]
+    assert sorted(m.overture_id for m in out.matches) == ["apt-a", "apt-b"]  # not the neighbour's building
+    assert "community_sampled_2_buildings_within_150m" in out.reasons
+    per_home = [r for r in out.reasons if r.startswith("community_60_homes_from_6_sampled_")]
+    assert per_home
+    kw_per_home = float(per_home[0].split("_sampled_")[1].split("_kw")[0])
+    assert abs(out.dc_kw - 60 * kw_per_home) < 0.1 * out.dc_kw
+    assert parcels.calls == 2  # the site's parcel + one ownership check
+    assert "community_sized_from_only_2_buildings" in out.manual_review
 
 
-def test_apartment_site_does_not_search_nearby_lots(footprints):
+def test_community_skips_other_owners_buildings(footprints):
+    from rooftop_solar.models import Occupancy
+
+    lon, lat = ll(220, 7)
+    parcels = _LotParcels()
+    parcels.other_owner_everywhere = True
+    site = Site("Altura", lat=lat, lon=lon, occupancy=Occupancy.R3, units=60)
+    out = size_sites([site], footprints, GeometricEstimator(), workers=1, progress=lambda *_: None, parcels=parcels)[0]
+    assert [m.overture_id for m in out.matches] == ["apt-a"]
+    assert "community_sampled_1_buildings_within_150m_skipped_1_other_owners" in out.reasons
+
+
+def test_apartment_site_is_not_sampled(footprints):
     lon, lat = ll(220, 7)
     parcels = _LotParcels()
     out = size_sites([Site("Oak", lat=lat, lon=lon, units=200)], footprints, GeometricEstimator(), workers=1,
                      progress=lambda *_: None, parcels=parcels)[0]
-    assert parcels.near_calls == [] and [m.overture_id for m in out.matches] == ["apt-a"]
-
-
-def test_parcels_near_sends_radius_and_caches(tmp_path, monkeypatch):
-    calls = []
-
-    def fake_get(self, url, params=None, timeout=None):
-        calls.append(params)
-        return _Resp(200, _v2_response(box(0, 0, 10, 10), box(20, 0, 30, 10)))
-
-    monkeypatch.setattr(regrid_mod.requests.Session, "get", fake_get)
-    client = RegridClient("t", cache_dir=tmp_path)
-    assert len(client.parcels_near(34.0, -118.0, 300, 500)) == 2
-    client.parcels_near(34.0, -118.0, 300, 500)
-    assert len(calls) == 1 and calls[0]["radius"] == "300" and calls[0]["limit"] == "500"
+    assert parcels.calls == 1 and [m.overture_id for m in out.matches] == ["apt-a"]
+    assert not any(r.startswith("community_") for r in out.reasons)
 
 
 def test_read_sites_reads_units_and_housing_type(tmp_path):

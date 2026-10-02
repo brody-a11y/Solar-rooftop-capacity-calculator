@@ -68,3 +68,13 @@ def test_unit_points_expand_address_ranges(addresses):
     pts = addresses.unit_points("100-141 Main St, Town, CA 90001")
     assert len(pts) == 3  # 100, 140 and 141 Main St; not Oak Ave or the other zip
     assert len(addresses.unit_points("100 Main St, Town, CA 90001")) == 1
+
+
+def test_homes_in_counts_addresses_on_each_footprint(addresses):
+    from shapely.geometry import box
+
+    row = box(-118.0045, 33.9998, -118.0035, 34.0012)  # covers 140 and 141 Main St
+    house = box(-118.00005, 33.99995, -117.99995, 34.00005)  # 100 Main St
+    empty = box(-117.9, 34.2, -117.899, 34.201)
+    assert addresses.homes_in("90001", [row, house, empty]) == [2, 1, 0]
+    assert addresses.homes_in("", [row]) == [0]
