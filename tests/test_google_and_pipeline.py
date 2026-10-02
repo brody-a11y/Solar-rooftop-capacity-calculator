@@ -299,3 +299,38 @@ def test_pitched_layout_kept_inside_plane_edge_setback():
     none, r18, r36 = count(0), count(18), count(36)
     assert none.module_count > r18.module_count >= r36.module_count > 0  # panels pulled back from the ridge
     assert r36.details["pitched_setback_kw"] > 0 and none.details["pitched_setback_kw"] == 0
+
+
+def test_pitched_r2_uses_plane_setback_not_commercial_perimeter():
+    from rooftop_solar.fire_code import FireCodeRules
+
+    resp = google_response(pitch=25.0)
+    ins = GoogleInsights.from_response(resp)
+    design = DesignConfig(min_panel_energy_ratio=0.0)
+    rules = FireCodeRules(residential_setback_ft=0)
+    r2 = GoogleFilteredEstimator(GeometricEstimator(rules, design)).estimate(Building("a", centered_box_ft(200, 100), Occupancy.R2), ins)
+    com = GoogleFilteredEstimator(GeometricEstimator(rules, design)).estimate(
+        Building("a", centered_box_ft(200, 100), Occupancy.COMMERCIAL), ins)
+    assert r2.module_count > com.module_count  # no 4 ft perimeter on top of the plane setback for R-2
+
+
+def test_census_result_cached_under_google_is_retried(tmp_path, monkeypatch):
+    import json
+
+    from rooftop_solar.sources import geocode as geocode_mod
+    from rooftop_solar.sources.geocode import Geocoder
+
+    cache = tmp_path / "g.json"
+    cache.write_text(json.dumps({"google|1 main st": {"lat": 1, "lon": 2, "source": "census", "precision": "interpolated",
+                                                      "matched_address": ""}}))
+
+    class R:
+        status_code = 200
+
+        def json(self):
+            return {"status": "OK", "results": [{"formatted_address": "1 Main St", "geometry": {
+                "location": {"lat": 34.2, "lng": -118.2}, "location_type": "ROOFTOP"}}]}
+
+    monkeypatch.setattr(geocode_mod.requests.Session, "get", lambda self, url, params=None, timeout=None: R())
+    r = Geocoder("google", api_key="k", cache_path=cache).geocode("1 Main St")
+    assert r.source == "google" and r.lat == 34.2

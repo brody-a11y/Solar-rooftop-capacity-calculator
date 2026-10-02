@@ -302,6 +302,12 @@ class GoogleFilteredEstimator:
         frame = LocalFrame.for_geometry(building.footprint)
         fp = frame.to_local(building.footprint)
         zone = self.geometric.usable_zone(building, frame)
+        # Pitched multifamily roofs under the R-3 rules (IFC 1205.3 exception): the
+        # plane-edge setback below replaces the commercial perimeter pathway, so
+        # pitched panels only have to sit on the roof and clear of obstructions.
+        residential_pitched = self.geometric.rules.uses_residential_rules(building.occupancy, pitched=True)
+        pitched_zone = (fp.difference(self.geometric._keep_out(building.obstructions, frame, frame.lat0))
+                        if residential_pitched else zone)
         equipment = [o for o in building.obstructions if o.kind in DETECTED_KINDS]
         # Raised racking spans detected equipment, so its zone ignores them.
         raised_zone = (self.geometric.usable_zone(replace(building, obstructions=[o for o in building.obstructions
@@ -341,7 +347,7 @@ class GoogleFilteredEstimator:
                 if ok is not None and rect.intersection(ok).area < self.min_inside_fraction * rect.area:
                     setback_m2 += across * down
                     continue
-            if rect.intersection(zone).area < self.min_inside_fraction * rect.area:
+            if rect.intersection(zone if is_flat else pitched_zone).area < self.min_inside_fraction * rect.area:
                 if equipment and is_flat and rect.intersection(raised_zone).area >= self.min_inside_fraction * rect.area:
                     equipment_m2 += across * down
                     equipment_rects.append(rect)

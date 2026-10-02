@@ -271,7 +271,7 @@ def test_imagery_age_uses_date_behind_most_kw_and_match_doubts_flag():
     assert imagery_concerns(o, 6, 0.25, today) == ["building_match_uncertain"]
 
 
-def test_equipment_clearance_does_not_trigger_stale_imagery_flag():
+def test_our_trimming_does_not_trigger_stale_imagery_flag():
     from datetime import date
 
     from rooftop_solar import Building
@@ -281,12 +281,13 @@ def test_equipment_clearance_does_not_trigger_stale_imagery_flag():
     from .helpers import centered_box_ft
 
     goo = SizingResult("b", "google_filtered", 20, 40, 1, 1, "flat",
-                       details={"imagery_date": "2024-01-01", "equipment_clearance_kw": 50})
+                       details={"imagery_date": "2024-01-01", "equipment_clearance_kw": 50,
+                                "google_unclipped_kw": 70})
     geo = SizingResult("b", "geometric", 100, 200, 1, 1, "flat")
     est = SiteEstimate("b", 20, 20, "google_filtered", 1, "none", None, False, primary=goo, geometric=geo, google=goo)
     o = SiteOutcome(Site("s", ""), buildings=[Building("b", centered_box_ft(100, 100), Occupancy.R2)],
                     estimates=[est], counted=[True])
-    assert imagery_concerns(o, 6, 0.25, date(2026, 10, 1)) == []  # 70 of 100 before clearance
+    assert imagery_concerns(o, 6, 0.25, date(2026, 10, 1)) == []  # Google saw 70 of 100 before our rules
 
 
 def test_redact_hides_keys_in_error_text():

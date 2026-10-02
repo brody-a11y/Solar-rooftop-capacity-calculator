@@ -64,7 +64,10 @@ class Geocoder:
         with self._lock:
             if key in self._cache:
                 hit = self._cache[key]
-                return GeocodeResult(**hit) if hit else None
+                # A Census street-range estimate saved under the Google provider (from a
+                # run where Google failed) is worth one more try with Google.
+                if not (self.provider == "google" and hit and hit.get("source") == "census"):
+                    return GeocodeResult(**hit) if hit else None
         google_failed = False
         if self.provider == "google":
             try:
