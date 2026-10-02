@@ -96,8 +96,13 @@ def mask_to_polygon(mask: np.ndarray, pixel_to_xy) -> Polygon:
 def read_geotiff(data: bytes, raw: bool = False):
     """(array, pixel_to_crs(col, row), epsg) from a north-up GeoTIFF. The first
     band as float, or with raw=True the array as stored (e.g. RGB imagery)."""
+    import logging
+
     import tifffile
 
+    # Google's GeoTIFFs store GDAL_NODATA as "0.0", which tifffile warns about
+    # parsing; the value is read below without its help.
+    logging.getLogger("tifffile").setLevel(logging.ERROR)
     with tifffile.TiffFile(io.BytesIO(data)) as tif:
         page = tif.pages[0]
         arr = page.asarray()
