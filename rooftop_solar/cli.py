@@ -270,23 +270,26 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
     # Report the configured cutoff, not the best fit: reference designs are
     # cost-trimmed, so fitting them would bias absolute MaxFit low.
     ratio, outcomes, rows, _ = next(t for t in sweep if t[0] == args.min_panel_energy_ratio)
-    # Pitched-roof setback sweep at the default cutoff (pitched-roof MaxFit sites
-    # only): each setback distance with the configured mode, then each mode at
-    # the configured distance.
+    # Pitched-roof setback sweep at the default cutoff, over the MaxFit sites
+    # the default run sizes as mostly pitched (the same sites in every row).
     default = (args.pitched_setback_in, args.pitched_setback_mode)
     variants = []
-    if args.pitched_setbacks:
-        variants = [(float(x), args.pitched_setback_mode) for x in args.pitched_setbacks.split(",") if x.strip()]
-    if args.pitched_setback_modes:
-        variants += [(args.pitched_setback_in, m.strip()) for m in args.pitched_setback_modes.split(",") if m.strip()]
-    variants = sorted(set(variants) | ({default} if variants else set()), key=lambda v: (v[1], v[0]))
+    for v in (args.pitched_variants or "").split(","):
+        if ":" in v:
+            mode, inches = v.strip().split(":", 1)
+            variants.append((float(inches), mode.strip()))
+    variants = list(dict.fromkeys([default] + variants)) if variants else []
+    pitched = [r["site"] for r in rows if r["kind"] == "maxfit" and r["roof"] in ("pitched", "mixed")]
+    pitched_floors = [r["site"] for r in rows if r["kind"] == "floor" and r["roof"] in ("pitched", "mixed")
+                      and not r["manual_review"]]
     setback_sweep = []
     for sb, mode in variants:
         srows = rows if (sb, mode) == default else run(args.min_panel_energy_ratio, sb, mode)[1]
-        errs = [float(r["tool_err"].rstrip("%")) / 100 for r in srows
-                if r["kind"] == "maxfit" and r["roof"] in ("pitched", "mixed") and r["tool_err"]]
-        setback_sweep.append(((sb, mode), errs, {r["site"]: r["tool_err"] for r in srows
-                                                 if r["roof"] in ("pitched", "mixed") and r["kind"] == "maxfit"}))
+        by_site = {r["site"]: r["tool_err"] for r in srows}
+        per = {s_: by_site.get(s_, "") for s_ in pitched}
+        errs = [float(v.rstrip("%")) / 100 for v in per.values() if v]
+        below = [s_ for s_ in pitched_floors if by_site.get(s_) and float(by_site[s_].rstrip("%")) < -10]
+        setback_sweep.append(((sb, mode), errs, per, below))
     _write_csv(rows, args.out, "site")
     if args.layouts:
         write_layouts([e.primary for o in outcomes for e in o._counted() if e.primary], args.layouts)
@@ -312,15 +315,19 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
             mark = "  <- shown above (default; set with --min-panel-energy-ratio)" if r == ratio else ""
             print(f"{r:7.2f} {hits:>5} of {len(errs):<3} {med_abs:>12.0%} {med:>+11.0%}{mark}")
     if len(setback_sweep) > 1:
-        print("\nPitched-roof setback sweep (MaxFit sites with mostly pitched roofs, standard column):")
-        print(f"{'setback':>22} {'within 10%':>11} {'median |err|':>13} {'median err':>11}  per site")
-        for (sb, mode), errs, per in setback_sweep:
+        print(f"\nPitched-roof setback sweep ({len(pitched)} MaxFit sites with mostly pitched roofs, standard column):")
+        print(f"{'setback':>22} {'within 10%':>11} {'median |err|':>13} {'median err':>11} "
+              f"{'below installed':>16}  per site")
+        for (sb, mode), errs, per, below in setback_sweep:
             hits = sum(abs(e) <= 0.10 for e in errs)
             med_abs = statistics.median([abs(e) for e in errs]) if errs else float("nan")
             med = statistics.median(errs) if errs else float("nan")
             mark = " <- default" if (sb, mode) == default else ""
             sites_txt = ", ".join(f"{k[:14]} {v}" for k, v in per.items())
-            print(f"{sb:4g} in {mode:>14} {hits:>5} of {len(errs):<3} {med_abs:>12.0%} {med:>+11.0%}{mark}  {sites_txt}")
+            print(f"{sb:4g} in {mode:>14} {hits:>5} of {len(errs):<3} {med_abs:>12.0%} {med:>+11.0%} "
+                  f"{len(below):>7} of {len(pitched_floors):<6}{mark}  {sites_txt}"
+                  + (f"\n{'':>22} below installed: {', '.join(below)}" if below else ""))
+        print("(below installed: unflagged pitched sites with a real system more than 10% larger than the tool's MaxFit)")
     _snapshots(args, outcomes)
     print(f"\nFull report: {args.out}")
     return 0
@@ -465,10 +472,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--geocoder", choices=["auto", "google"], default="auto")
     a.add_argument("--search-m", type=float, default=40.0)
     a.add_argument("--campus-radius-m", type=float, default=0.0)
-    a.add_argument("--pitched-setbacks", default="0,18,36",
-                   help="also size at these pitched-roof setbacks (inches) and compare; '' to skip")
-    a.add_argument("--pitched-setback-modes", default="ridge,ridge_pathway,ring",
-                   help="also size with these pitched setback modes at --pitched-setback-in and compare; '' to skip")
+    a.add_argument("--pitched-variants", default="ridge:18,ridge_pathway:36,ring:6,ring:9,ring:12,ring:18",
+                   help="also size with these pitched setback rules (mode:inches) and compare; '' to skip")
     a.add_argument("--energy-ratios", default="0,0.6,0.7,0.8,0.9",
                    help="comma-separated panel-yield cutoffs to compare (uses saved Google answers, no extra cost)")
     a.set_defaults(func=cmd_accuracy)
