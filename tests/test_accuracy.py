@@ -23,9 +23,18 @@ def test_load_truth_csv_groups_designs(tmp_path):
 
 
 def test_best_error_picks_closest_design_after_module_scaling():
-    err, design = _best_error(100.0, [{"kw": 150, "module_w": 600}, {"kw": 112, "module_w": 600}], module_w=500)
-    assert design["kw"] == 112  # 100 kW at 500 W -> 120 kW at 600 W
-    assert err == pytest.approx(120 / 112 - 1)
+    err, design = _best_error(100.0, [{"kw": 150, "module_w": 600}, {"kw": 104, "module_w": 600}], module_w=550)
+    assert design["kw"] == 104  # modern modules: about the same W per m2, so ~100 kW either way
+    assert err == pytest.approx(100 / 104 - 1)
+
+
+def test_older_lower_wattage_modules_scale_by_density_not_wattage():
+    # A 395 W design on the same roof is not 28% smaller than a 550 W one (395/550):
+    # the panels are smaller too. Only the ~5% density difference counts.
+    err, _ = _best_error(100.0, [{"kw": 95, "module_w": 395}], module_w=550)
+    assert err == pytest.approx(100 * 205 / 215 / 95 - 1)
+    err_old, _ = _best_error(100.0, [{"kw": 70, "module_w": 240}], module_w=550)  # 2010-era 60-cell
+    assert err_old == pytest.approx(100 * 150 / 215 / 70 - 1)
 
 
 def _fake_insights(lat, lon):

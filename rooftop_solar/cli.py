@@ -265,11 +265,16 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
     sweep = []
     for ratio in ratios:
         outcomes, rows = run(ratio)
-        errs = [float(r["google_err"].rstrip("%")) / 100 for r in rows if r["google_err"]]
-        sweep.append((ratio, outcomes, rows, errs))
+        # MaxFit designs score the cutoff; floors (built systems) only count when
+        # the tool falls more than 10% below them.
+        errs = [float(r["tool_err"].rstrip("%")) / 100 for r in rows if r["kind"] == "maxfit" and r["tool_err"]]
+        below = sum(1 for r in rows if r["kind"] == "floor" and r["tool_err"] and not r["manual_review"]
+                    and float(r["tool_err"].rstrip("%")) < -10)
+        floors = sum(1 for r in rows if r["kind"] == "floor" and r["tool_err"] and not r["manual_review"])
+        sweep.append((ratio, outcomes, rows, errs, below, floors))
     # Report the configured cutoff, not the best fit: reference designs are
     # cost-trimmed, so fitting them would bias absolute MaxFit low.
-    ratio, outcomes, rows, _ = next(t for t in sweep if t[0] == args.min_panel_energy_ratio)
+    ratio, outcomes, rows = next(t for t in sweep if t[0] == args.min_panel_energy_ratio)[:3]
     # Pitched-roof setback sweep at the default cutoff, over the MaxFit sites
     # the default run sizes as mostly pitched (the same sites in every row).
     default = (args.pitched_setback_in, args.pitched_setback_mode)
@@ -306,14 +311,15 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
     if _equipment_summary(outcomes):
         print("\n" + _equipment_summary(outcomes))
     if len(sweep) > 1:
-        print("\nPanel-yield cutoff sweep (Google column):")
-        print(f"{'cutoff':>7} {'within 10%':>11} {'median |err|':>13} {'median err':>11}")
-        for r, _o, _rows, errs in sweep:
+        print("\nPanel-yield cutoff sweep (MaxFit designs, standard column; below installed = unflagged built systems"
+              " more than 10% above the tool):")
+        print(f"{'cutoff':>7} {'within 10%':>11} {'median |err|':>13} {'median err':>11} {'below installed':>16}")
+        for r, _o, _rows, errs, below, floors in sweep:
             hits = sum(abs(e) <= 0.10 for e in errs)
             med_abs = statistics.median([abs(e) for e in errs]) if errs else float("nan")
             med = statistics.median(errs) if errs else float("nan")
             mark = "  <- shown above (default; set with --min-panel-energy-ratio)" if r == ratio else ""
-            print(f"{r:7.2f} {hits:>5} of {len(errs):<3} {med_abs:>12.0%} {med:>+11.0%}{mark}")
+            print(f"{r:7.2f} {hits:>5} of {len(errs):<3} {med_abs:>12.0%} {med:>+11.0%} {below:>7} of {floors:<6}{mark}")
     if len(setback_sweep) > 1:
         print(f"\nPitched-roof setback sweep ({len(pitched)} MaxFit sites with mostly pitched roofs, standard column):")
         print(f"{'setback':>22} {'within 10%':>11} {'median |err|':>13} {'median err':>11} "

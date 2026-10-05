@@ -56,11 +56,24 @@ def truth_sites(truth: dict[str, dict]) -> list[Site]:
                  "", t.get("units")) for name, t in truth.items()]
 
 
+def module_w_per_m2(watts: float) -> float:
+    """Typical module output per m2 of panel for a module of this wattage
+    (datasheet ranges: 60-cell 250-340 W ~1.64 m2; 72-cell / large-format
+    400-620 W ~1.9-2.7 m2). Newer high-wattage modules are mostly bigger, not
+    much denser, so wattage alone is a poor guide to how many fit on a roof."""
+    for limit, density in ((250, 150.0), (300, 170.0), (350, 190.0), (400, 205.0), (480, 210.0)):
+        if watts < limit:
+            return density
+    return 215.0
+
+
 def _best_error(pred_kw: float, truths: list[dict], module_w: float, floor: bool = False) -> tuple[float, dict]:
-    """Signed error against the closest design (the largest, for floors), after module-wattage scaling."""
+    """Signed error against the closest design (the largest, for floors). The
+    tool's kW is converted to the design's module by output per m2 of panel,
+    not by wattage: a 395 W panel is smaller than a 550 W one, not weaker."""
     best = None
     for t in truths:
-        scaled = pred_kw * ((t.get("module_w") or module_w) / module_w)
+        scaled = pred_kw * module_w_per_m2(t.get("module_w") or module_w) / module_w_per_m2(module_w)
         err = (scaled - t["kw"]) / t["kw"]
         if best is None or (err < best[0] if floor else abs(err) < abs(best[0])):
             best = (err, t)
