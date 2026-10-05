@@ -157,6 +157,8 @@ def test_cli_size_sites_with_coordinates(tmp_path, footprints, monkeypatch):
     with out.open() as f:
         rows = list(csv.DictReader(f))
     assert rows[0]["site_id"] == "Warehouse" and float(rows[0]["dc_kw"]) > 0
+    for col in ("dc_kw_equipment_1.5ft", "dc_kw_equipment_1ft", "dc_kw_pitched_ring_6in"):  # default alternatives
+        assert float(rows[0][col]) > 0
     with (tmp_path / "res_buildings.csv").open() as f:
         assert list(csv.DictReader(f))[0]["overture_class"] == "warehouse"
 

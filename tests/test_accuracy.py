@@ -266,3 +266,15 @@ def test_summary_reports_installed_share_of_maxfit():
 
     text = summary([row(1.0), row(0.25), row(3.0)])  # installed = 50%, 80%, 25% of MaxFit
     assert "3 unflagged floor sites): median 50%" in text
+
+
+def test_alternative_rules_specs():
+    from rooftop_solar.cli import _alternative_rules
+    from rooftop_solar.fire_code import FireCodeRules
+
+    r, col = _alternative_rules(FireCodeRules(), "equipment:1.5")
+    assert r.clearances_ft["equipment"] == 1.5 and col == "dc_kw_equipment_1.5ft"
+    r, col = _alternative_rules(FireCodeRules(), "pitched:ring:6")
+    assert r.pitched_setback_mode == "ring" and r.residential_setback_ft == 0.5 and col == "dc_kw_pitched_ring_6in"
+    with pytest.raises(ValueError):
+        _alternative_rules(FireCodeRules(), "bogus:1")

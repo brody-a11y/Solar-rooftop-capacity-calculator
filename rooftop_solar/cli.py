@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import csv
 import json
 import os
@@ -174,6 +175,21 @@ def _unit_addresses(args: argparse.Namespace, sites):
     return OvertureAddresses()
 
 
+def _alternative_rules(rules: FireCodeRules, spec: str) -> tuple[FireCodeRules, str]:
+    """'equipment:1.5' (ft around detected equipment) or 'pitched:ring:6'
+    (pitched setback mode and inches) -> (rules, output column name)."""
+    parts = spec.split(":")
+    if parts[0] == "equipment" and len(parts) == 2:
+        ft = float(parts[1])
+        return (dataclasses.replace(rules, clearances_ft={**rules.clearances_ft, "equipment": ft}),
+                f"dc_kw_equipment_{ft:g}ft")
+    if parts[0] == "pitched" and len(parts) == 3 and parts[1] in ("ridge", "ridge_pathway", "ring"):
+        inches = float(parts[2])
+        return (dataclasses.replace(rules, pitched_setback_mode=parts[1], residential_setback_ft=inches / 12.0),
+                f"dc_kw_pitched_{parts[1]}_{inches:g}in")
+    raise ValueError("use equipment:<ft> or pitched:<ridge|ridge_pathway|ring>:<inches>")
+
+
 def cmd_size_sites(args: argparse.Namespace) -> int:
     geometric, calibrator, client = _setup(args)
     try:
@@ -201,6 +217,25 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
         equipment_client=_equipment(args),
     )
     site_rows = [o.row() for o in outcomes]
+    # Same sites under alternative rules, as extra columns (saved lookups are
+    # reused, so these cost time, not API calls).
+    for spec in [a.strip() for a in (args.alternatives or "").split(",") if a.strip()]:
+        try:
+            rules, column = _alternative_rules(geometric.rules, spec)
+        except ValueError as exc:
+            print(f"Skipping alternative '{spec}': {exc}", file=sys.stderr)
+            continue
+        print(f"Re-sizing with {column.replace('_', ' ')}...", flush=True)
+        alt = size_sites(
+            sites, footprints, GeometricEstimator(rules, geometric.design), geocoder, client, calibrator, ReviewPolicy(),
+            search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
+            google_max_points=args.google_max_points, unit_addresses=_unit_addresses(args, sites),
+            parcels=_parcels(args), include_carports=not args.no_carports,
+            carport_min_energy_ratio=args.carport_min_energy_ratio, carport_min_kw=args.carport_min_kw,
+            community_sample=args.community_sample, equipment_client=_equipment(args), progress=lambda *_: None,
+        )
+        for row, o in zip(site_rows, alt):
+            row[column] = round(o.dc_kw, 2)
     _write_csv(site_rows, args.out, "site_id")
     buildings_out = args.buildings_out or args.out.rsplit(".", 1)[0] + "_buildings.csv"
     _write_csv([r for o in outcomes for r in o.building_rows()], buildings_out, "site_id")
@@ -221,7 +256,6 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
 
 
 def cmd_accuracy(args: argparse.Namespace) -> int:
-    import dataclasses
     import statistics
 
     from .accuracy import compare, load_truth, summary, truth_sites
@@ -238,17 +272,19 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
 
     first = [True]
 
-    def run(ratio: float, setback_in: float | None = None, mode: str | None = None):
+    def run(ratio: float, setback_in: float | None = None, mode: str | None = None, rules_override=None,
+            label: str = ""):
         # Progress on the first pass (the slow one: lookups); later passes reuse the caches.
         progress = (lambda msg: print(msg, flush=True)) if first[0] else (lambda *_: None)
         if not first[0]:
-            what = (f"pitched setback {setback_in:g} in, {mode}" if setback_in is not None
-                    else f"panel-yield cutoff {ratio:g}")
+            what = label or (f"pitched setback {setback_in:g} in, {mode}" if setback_in is not None
+                             else f"panel-yield cutoff {ratio:g}")
             print(f"Re-sizing at {what}...", flush=True)
         first[0] = False
         rules = (dataclasses.replace(geometric.rules, residential_setback_ft=setback_in / 12.0,
                                      pitched_setback_mode=mode)
                  if setback_in is not None else geometric.rules)
+        rules = rules_override or rules
         geo = GeometricEstimator(rules, dataclasses.replace(geometric.design, min_panel_energy_ratio=ratio))
         outcomes = size_sites(
             sites, footprints, geo, geocoder, client, calibrator, ReviewPolicy(),
@@ -295,6 +331,25 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
         errs = [float(v.rstrip("%")) / 100 for v in per.values() if v]
         below = [s_ for s_ in pitched_floors if by_site.get(s_) and float(by_site[s_].rstrip("%")) < -10]
         setback_sweep.append(((sb, mode), errs, per, below))
+    # Equipment clearance sweep (flat-roof walking space around detected equipment).
+    clear_sweep = []
+    flat = [r["site"] for r in rows if r["kind"] == "maxfit" and r["roof"] in ("flat", "mixed")]
+    flat_floors = [r["site"] for r in rows if r["kind"] == "floor" and r["roof"] in ("flat", "mixed")
+                   and not r["manual_review"]]
+    default_ft = geometric.rules.clearances_ft["equipment"]
+    for ft in sorted({float(x) for x in (args.equipment_clearances or "").split(",") if x.strip()} | {default_ft}
+                     if args.equipment_clearances else []):
+        if ft == default_ft:
+            crows = rows
+        else:
+            rules = dataclasses.replace(geometric.rules,
+                                        clearances_ft={**geometric.rules.clearances_ft, "equipment": ft})
+            crows = run(args.min_panel_energy_ratio, rules_override=rules, label=f"equipment clearance {ft:g} ft")[1]
+        by_site = {r["site"]: r for r in crows}
+        errs = [float(by_site[s_]["tool_err"].rstrip("%")) / 100 for s_ in flat if by_site.get(s_, {}).get("tool_err")]
+        below = [s_ for s_ in flat_floors if by_site.get(s_, {}).get("tool_err")
+                 and float(by_site[s_]["tool_err"].rstrip("%")) < -10]
+        clear_sweep.append((ft, errs, below, {s_: by_site.get(s_, {}).get("tool_err", "") for s_ in flat}))
     _write_csv(rows, args.out, "site")
     if args.layouts:
         write_layouts([e.primary for o in outcomes for e in o._counted() if e.primary], args.layouts)
@@ -334,6 +389,17 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
                   f"{len(below):>7} of {len(pitched_floors):<6}{mark}  {sites_txt}"
                   + (f"\n{'':>22} below installed: {', '.join(below)}" if below else ""))
         print("(below installed: unflagged pitched sites with a real system more than 10% larger than the tool's MaxFit)")
+    if len(clear_sweep) > 1:
+        print(f"\nEquipment clearance sweep ({len(flat)} MaxFit sites with mostly flat roofs, standard column):")
+        print(f"{'clearance':>9} {'within 10%':>11} {'median |err|':>13} {'median err':>11} {'below installed':>16}  per site")
+        for ft, errs, below, per in clear_sweep:
+            hits = sum(abs(e) <= 0.10 for e in errs)
+            med_abs = statistics.median([abs(e) for e in errs]) if errs else float("nan")
+            med = statistics.median(errs) if errs else float("nan")
+            mark = " <- default" if ft == default_ft else ""
+            print(f"{ft:6g} ft {hits:>5} of {len(errs):<3} {med_abs:>12.0%} {med:>+11.0%} {len(below):>7} of "
+                  f"{len(flat_floors):<6}{mark}  " + ", ".join(f"{k[:14]} {v}" for k, v in per.items()))
+        print("(below installed: unflagged flat-roof sites with a built system more than 10% above the tool's MaxFit)")
     _snapshots(args, outcomes)
     print(f"\nFull report: {args.out}")
     return 0
@@ -467,6 +533,9 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument("--geocoder", choices=["auto", "overture", "census", "google"], default="auto",
                     help="auto: Overture address points, then Census (free, US); google: billed")
     ss.add_argument("--search-m", type=float, default=40.0, help="max distance from the address point to a building")
+    ss.add_argument("--alternatives", default="equipment:1.5,equipment:1,pitched:ring:6",
+                    help="extra kW columns under alternative rules, comma-separated: equipment:<ft>, "
+                         "pitched:<ridge|ridge_pathway|ring>:<inches>; '' for none")
     ss.add_argument("--campus-radius-m", type=float, default=0.0,
                     help="also size every building within this radius (multi-building properties); 0 = one building")
     ss.set_defaults(func=cmd_size_sites)
@@ -480,6 +549,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--campus-radius-m", type=float, default=0.0)
     a.add_argument("--pitched-variants", default="ridge:18,ridge_pathway:36,ring:6,ring:9,ring:12,ring:18",
                    help="also size with these pitched setback rules (mode:inches) and compare; '' to skip")
+    a.add_argument("--equipment-clearances", default="1,1.5,2",
+                   help="also size with these clearances (ft) around detected rooftop equipment and compare; '' to skip")
     a.add_argument("--energy-ratios", default="0,0.6,0.7,0.8,0.9",
                    help="comma-separated panel-yield cutoffs to compare (uses saved Google answers, no extra cost)")
     a.set_defaults(func=cmd_accuracy)
