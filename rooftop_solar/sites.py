@@ -52,10 +52,12 @@ def _occupancy_from_text(text: str) -> Occupancy | None:
         return None
     if "commercial" in t or t in ("office", "retail", "industrial", "warehouse"):
         return Occupancy.COMMERCIAL
-    if "multi" in t or "apartment" in t or t in ("r-2", "r2", "mf"):
-        return Occupancy.R2
+    # Single-family wording first: "Single-Family Home Apartments" and "Attached
+    # Townhomes" are build-to-rent homes, not apartment buildings.
     if t in ("r-3", "r3") or "townho" in t or "single" in t or "btr" in t or "rental home" in t:
         return Occupancy.R3
+    if "multi" in t or "apartment" in t or t in ("r-2", "r2", "mf"):
+        return Occupancy.R2
     return None
 
 
@@ -317,7 +319,8 @@ def size_sites(
     carport_min_energy_ratio: float = 0.8,
     carport_min_kw: float = 15.0,
     max_owner_lookups: int = 10,
-    community_sample: int = 10,
+    community_sample: int = 6,
+    community_owner_checks: bool = False,
     min_kw_per_unit: float = 0.1,
     max_kw_per_unit_one_building: float = 4.0,
     equipment_client=None,
@@ -376,6 +379,8 @@ def size_sites(
         for o in outcomes:
             if not o.geocode:
                 continue
+            if community_sample > 0 and not community_owner_checks and o.site.occupancy == Occupancy.R3 and o.site.units:
+                continue  # single-family community: sized from a sample of homes, no parcel records needed
             try:
                 parcel = parcels.parcel_at(o.geocode.lat, o.geocode.lon)
             except Exception as exc:  # parcel data is a refinement; fall back to the address match
@@ -470,7 +475,8 @@ def size_sites(
     community: dict[str, list[int]] = {}  # site id -> homes in each found building
     if community_sample > 0:
         for o in outcomes:
-            sample = _community_sample(o, found, footprints, parcels, unit_addresses, community_sample)
+            sample = _community_sample(o, found, footprints, parcels if community_owner_checks else None,
+                                       unit_addresses, community_sample)
             if sample is not None:
                 found[o.site.id], community[o.site.id] = sample
 
@@ -642,7 +648,7 @@ def _community_sample(o: SiteOutcome, found: dict, footprints, parcels, unit_add
     ids = {m.overture_id for m in found.get(o.site.id, [])}
     cands = sorted((m for m in near if m.overture_id not in ids and structure_kind(m) == "building"
                     and _fp_area_m2(m.footprint) <= 2000.0), key=lambda m: m.distance_m)
-    owner = o.parcel if parcels is not None else None
+    owner = o.parcel if parcels is not None and o.parcel is not None else None
     picked, checked, other = [], 0, 0
     for m in cands:
         if len(picked) + len(have) >= n or checked >= 3 * n:
@@ -687,6 +693,9 @@ def _scale_to_units(o: SiteOutcome, homes_per_building: list[int], min_sample: i
     if kw / homes > max_kw_per_home:  # homes per building undercounted (e.g. one address for a fourplex)
         o.manual_review.append(f"community_{kw / homes:.0f}_kw_per_home_implausible_not_scaled")
         return
+    per_home = sorted(e.dc_kw / h for e, h in rows)
+    if per_home[-1] > 3 * max(per_home[len(per_home) // 4], 0.1):  # mixed sample (e.g. houses plus a clubhouse)
+        o.manual_review.append(f"community_sample_varies_{per_home[0]:.0f}_to_{per_home[-1]:.0f}_kw_per_home")
     factor = o.site.units / homes
     for e, _h in rows:
         _scale_estimate(e, factor)

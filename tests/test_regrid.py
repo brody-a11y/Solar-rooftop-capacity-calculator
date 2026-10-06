@@ -389,7 +389,7 @@ def test_community_sizes_same_owner_sample_and_scales_to_units(footprints):
     parcels = _LotParcels()
     site = Site("Altura", address="1 Oak St, San Antonio, TX 78233", lat=lat, lon=lon, occupancy=Occupancy.R3, units=60)
     out = size_sites([site], footprints, GeometricEstimator(), workers=1, progress=lambda *_: None, parcels=parcels,
-                     unit_addresses=_Homes(), community_sample=2)[0]
+                     unit_addresses=_Homes(), community_sample=2, community_owner_checks=True)[0]
     assert sorted(m.overture_id for m in out.matches) == ["apt-a", "apt-b"]  # not the neighbour's building
     assert "community_sampled_2_buildings_within_150m" in out.reasons
     per_home = [r for r in out.reasons if r.startswith("community_60_homes_from_6_sampled_")]
@@ -426,7 +426,8 @@ def test_community_skips_other_owners_buildings(footprints):
     parcels = _LotParcels()
     parcels.other_owner_everywhere = True
     site = Site("Altura", lat=lat, lon=lon, occupancy=Occupancy.R3, units=60)
-    out = size_sites([site], footprints, GeometricEstimator(), workers=1, progress=lambda *_: None, parcels=parcels)[0]
+    out = size_sites([site], footprints, GeometricEstimator(), workers=1, progress=lambda *_: None, parcels=parcels,
+                     community_owner_checks=True)[0]
     assert [m.overture_id for m in out.matches] == ["apt-a"]
     assert "community_sampled_1_buildings_within_150m_skipped_1_other_owners" in out.reasons
 
@@ -451,3 +452,16 @@ def test_read_sites_reads_units_and_housing_type(tmp_path):
     a, b = read_sites(str(p))
     assert a.units == 316 and a.occupancy == Occupancy.R3
     assert b.units == 1200 and b.occupancy is None
+
+
+def test_community_uses_no_parcel_records_by_default(footprints):
+    from rooftop_solar.models import Occupancy
+
+    lon, lat = ll(220, 7)
+    parcels = _LotParcels()
+    site = Site("Altura", address="1 Oak St, San Antonio, TX 78233", lat=lat, lon=lon, occupancy=Occupancy.R3, units=60)
+    out = size_sites([site], footprints, GeometricEstimator(), workers=1, progress=lambda *_: None, parcels=parcels,
+                     unit_addresses=_Homes(), community_sample=2)[0]
+    assert parcels.calls == 0  # no Regrid records for single-family communities
+    assert any(r.startswith("community_sampled_2_buildings") and r.endswith("_ownership_not_checked") for r in out.reasons)
+    assert any(r.startswith("community_60_homes_from_") for r in out.reasons)
