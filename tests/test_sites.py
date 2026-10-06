@@ -178,7 +178,23 @@ def test_group_column_sums_buildings_into_one_property(tmp_path, footprints, mon
         per_site = {r["site_id"]: float(r["dc_kw"]) for r in csv.DictReader(f)}
     assert [p["group"] for p in props] == ["Oak Complex"]
     assert props[0]["buildings"] == "2"
-    assert float(props[0]["dc_kw"]) == pytest.approx(per_site["Apt A"] + per_site["Apt B"])
+    assert float(props[0]["dc_kw"]) == pytest.approx(per_site["Apt A"] + per_site["Apt B"], abs=0.02)
+
+
+def test_group_rows_on_the_same_building_count_it_once(tmp_path, footprints, monkeypatch):
+    import rooftop_solar.cli as cli
+
+    monkeypatch.setattr(cli, "OvertureFootprints", lambda **kw: footprints)
+    la, lo = ll(220, 7)[::-1]
+    sites = tmp_path / "s.csv"
+    sites.write_text(f"Name,Group,Latitude,Longitude\nWest,Oak,{la},{lo}\nEast,Oak,{la},{lo}\n")
+    out = tmp_path / "r.csv"
+    assert main(["size-sites", "--sites", str(sites), "--out", str(out), "--workers", "1"]) == 0
+    with (tmp_path / "r_properties.csv").open() as f:
+        prop = list(csv.DictReader(f))[0]
+    with out.open() as f:
+        one = float(next(csv.DictReader(f))["dc_kw"])
+    assert prop["buildings"] == "1" and float(prop["dc_kw"]) == pytest.approx(one, abs=0.02)
 
 
 class _UnitPoints:

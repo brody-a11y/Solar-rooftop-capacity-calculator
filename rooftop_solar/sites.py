@@ -127,6 +127,7 @@ class SiteOutcome:
     parcel: object | None = None  # regrid.Parcel when parcel lookup succeeded
     counted: list[bool] = field(default_factory=list)  # per estimate: included in the site total
     manual_review: list[str] = field(default_factory=list)  # low-confidence reasons a person should look at
+    manual_review_extra: list[str] = field(default_factory=list)  # review reasons found while sizing
     listed_units: int | None = None  # unit address records found for the site's address
     parcel_units: int | None = None  # units in the county parcel records (Regrid), where recorded
 
@@ -254,13 +255,27 @@ def group_rows(outcomes: list["SiteOutcome"]) -> list[dict]:
         reasons: list[str] = []
         for r in member_rows:
             reasons.extend(x for x in r["reasons"].split(";") if x and x not in reasons)
+        # Rows of one group can match the same building (e.g. two addresses on one
+        # parcel): count each building once.
+        seen, buildings, dc, raw, mods = set(), 0, 0.0, 0.0, 0
+        for m in members:
+            for (b, e, c), match in zip(m._triples(), m.matches or [None] * len(m.estimates)):
+                key = match.overture_id if match is not None else (m.site.id, b.id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                buildings += 1
+                if c:
+                    dc += e.dc_kw
+                    raw += e.raw_kw
+                    mods += e.primary.module_count if e.primary else 0
         rows.append({
             "group": name,
             "sites": len(members),
-            "buildings": sum(r["buildings"] for r in member_rows),
-            "dc_kw": round(sum(r["dc_kw"] for r in member_rows), 2),
-            "raw_kw": round(sum(r["raw_kw"] for r in member_rows), 2),
-            "module_count": sum(r["module_count"] for r in member_rows),
+            "buildings": buildings,
+            "dc_kw": round(dc, 2),
+            "raw_kw": round(raw, 2),
+            "module_count": mods,
             "manual_review": any(r["manual_review"] for r in member_rows),
             "needs_review": any(r["needs_review"] for r in member_rows),
             "reasons": ";".join(reasons),
@@ -326,6 +341,7 @@ def size_sites(
     community_sample: int = 6,
     community_owner_checks: bool = False,
     min_kw_per_unit: float = 0.1,
+    big_building_m2: float = 800.0,
     max_kw_per_unit_one_building: float = 4.0,
     equipment_client=None,
     stale_imagery_years: float = 6.0,
@@ -567,8 +583,17 @@ def size_sites(
             if area(False) > 1.5 * area(True):
                 o.reasons.append(f"counted_{with_google.count(False)}_buildings_without_google_data_from_outlines")
             else:
-                o.counted = list(with_google)
-                o.reasons.append(f"not_counted_{with_google.count(False)}_buildings_without_google_data")
+                # Small ones are garages and sheds; a building-sized roof Google has no
+                # data for (e.g. newer imagery gap) is counted from its outline and reviewed.
+                big = [not g and _area_m2(b) >= big_building_m2 and b.structure == "building"
+                       for b, g in zip(o.buildings, with_google)]
+                o.counted = [g or k for g, k in zip(with_google, big)]
+                dropped = with_google.count(False) - sum(big)
+                if dropped:
+                    o.reasons.append(f"not_counted_{dropped}_buildings_without_google_data")
+                if any(big):
+                    o.reasons.append(f"counted_{sum(big)}_large_buildings_without_google_data_from_outlines")
+                    o.manual_review_extra.append(f"{sum(big)}_large_building_without_google_data_sized_from_outline")
         # Carports and garages count only when Google sized them (so shading is known)
         # and their typical panel yields >= carport_min_energy_ratio of the best roof panel.
         best = max((e.google.details.get("best_panel_kwh", 0.0) for b, e in zip(o.buildings, o.estimates)
@@ -601,6 +626,7 @@ def size_sites(
                 e.reasons.append(f"outline_only_scaled_{outline_only_factor:g}")
     for o in outcomes:
         o.manual_review = imagery_concerns(o, stale_imagery_years, min_imagery_coverage, today or date.today())
+        o.manual_review += [r for r in o.manual_review_extra if r not in o.manual_review]
         # Under ~0.1 kW per home: the buildings found can't be the whole property
         # (garden and mid-rise MaxFit designs run ~0.7-3 kW per unit).
         if (o.site.units and o.buildings and min_kw_per_unit > 0 and o.site.id not in community

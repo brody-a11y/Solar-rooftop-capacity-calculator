@@ -180,6 +180,13 @@ def test_outline_only_buildings_not_counted_when_google_covers_parcel(footprints
     assert row["dc_kw"] == pytest.approx(sum(e.dc_kw for e, c in zip(out.estimates, out.counted) if c), abs=0.01)
     assert row["uncounted_buildings_kw"] > 0
 
+    # A building-sized roof without Google data (here: threshold under apt-b's 600 m2) is
+    # counted from its outline and sent to review instead of being dropped as a garage.
+    big = size_sites([Site("Oak", lat=lat, lon=lon)], footprints, GeometricEstimator(), google_client=Client(),
+                     workers=1, progress=lambda *_: None, parcels=_FakeParcels(), big_building_m2=500)[0]
+    assert big.counted == [True, True]
+    assert "1_large_building_without_google_data_sized_from_outline" in big.manual_review
+
 
 def _dataset_with_carports(tmp_path):
     import pyarrow as pa
