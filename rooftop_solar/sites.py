@@ -99,7 +99,11 @@ def read_sites(path: str) -> list[Site]:
                 address = f"{address}, {state_zip}"
             lat = lon = None
             if has_ll and get("lat") and get("lon"):
-                lat, lon = float(get("lat")), float(get("lon"))
+                try:
+                    lat, lon = float(get("lat").replace(",", "")), float(get("lon").replace(",", ""))
+                except ValueError:
+                    print(f"Row {i}: latitude/longitude '{get('lat')}', '{get('lon')}' aren't numbers; "
+                          + ("using the address instead." if address else "row skipped."))
             if not address and lat is None:
                 continue
             sid = get("id") or f"site-{i}"

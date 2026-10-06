@@ -316,3 +316,12 @@ def test_single_big_building_for_few_units_or_a_store_goes_to_review(footprints)
     out = size_sites([Site("Arrowood", lat=lat, lon=lon, units=2)], footprints, GeometricEstimator(), workers=1,
                      progress=lambda *_: None)[0]
     assert any("check_match" in r for r in out.manual_review)
+
+
+def test_bad_coordinates_skip_the_row_instead_of_stopping(tmp_path, capsys):
+    p = tmp_path / "s.csv"
+    p.write_text("Name,Address,Latitude,Longitude\nA,1 Main St Town CA 90001,,\nB,,PASTE_LAT,PASTE_LON\n"
+                 "C,2 Oak St Town CA 90001,oops,1\n")
+    sites = read_sites(str(p))
+    assert [s.id for s in sites] == ["A", "C"] and sites[1].lat is None
+    assert "row skipped" in capsys.readouterr().out
