@@ -309,3 +309,10 @@ def test_too_few_kw_per_unit_goes_to_manual_review(footprints):
     ok = size_sites([Site("Oak", lat=lat, lon=lon, units=40)], footprints, GeometricEstimator(), workers=1,
                     progress=lambda *_: None)[0]
     assert not any("kw_per_unit" in r for r in ok.manual_review)
+
+
+def test_single_big_building_for_few_units_or_a_store_goes_to_review(footprints):
+    lon, lat = ll(30, 20)  # the "warehouse" building in the test data
+    out = size_sites([Site("Arrowood", lat=lat, lon=lon, units=2)], footprints, GeometricEstimator(), workers=1,
+                     progress=lambda *_: None)[0]
+    assert any("check_match" in r for r in out.manual_review)

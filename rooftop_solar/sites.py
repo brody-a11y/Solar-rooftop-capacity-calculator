@@ -216,6 +216,8 @@ class SiteOutcome:
         return rows
 
 
+_NONRESIDENTIAL_CLASSES = {"retail", "commercial", "warehouse", "industrial", "office", "supermarket", "manufacture",
+                           "service", "parking", "school", "hospital", "church"}
 _NON_ROOF_CLASSES = {"carport", "garage", "garages", "shed", "roof", "parking", "kiosk", "hut"}
 
 
@@ -317,6 +319,7 @@ def size_sites(
     max_owner_lookups: int = 10,
     community_sample: int = 10,
     min_kw_per_unit: float = 0.1,
+    max_kw_per_unit_one_building: float = 4.0,
     equipment_client=None,
     stale_imagery_years: float = 6.0,
     min_imagery_coverage: float = 0.25,
@@ -593,6 +596,15 @@ def size_sites(
         if (o.site.units and o.buildings and min_kw_per_unit > 0 and o.site.id not in community
                 and o.dc_kw < min_kw_per_unit * o.site.units):
             o.manual_review.append(f"only_{o.dc_kw / o.site.units:.2f}_kw_per_unit_buildings_likely_missing")
+        # One building holding far more than an apartment roof per home (or mapped as
+        # a store, office or warehouse): the address probably landed on a neighbour.
+        counted_b = [b for b, _e, c in o._triples() if c]
+        classes = {(m.building_class or "") for m in o.matches}
+        if o.site.units and counted_b and o.site.occupancy != Occupancy.COMMERCIAL:
+            if len(counted_b) == 1 and o.dc_kw > max_kw_per_unit_one_building * o.site.units:
+                o.manual_review.append(f"one_building_{o.dc_kw / o.site.units:.1f}_kw_per_unit_check_match")
+            elif classes and classes <= _NONRESIDENTIAL_CLASSES:
+                o.manual_review.append("matched_building_mapped_as_" + sorted(classes)[0] + "_check_match")
         if o.site.id in community:
             _scale_to_units(o, community[o.site.id], min_sample=min(5, community_sample))
     return outcomes
