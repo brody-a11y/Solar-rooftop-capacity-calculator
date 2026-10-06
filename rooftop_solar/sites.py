@@ -605,9 +605,13 @@ def _community_sample(o: SiteOutcome, found: dict, footprints, parcels, unit_add
     units = o.site.units
     if not o.geocode or not units or units < 10:
         return None
+    # Only properties the input calls single-family / townhome / build-to-rent:
+    # apartment and senior complexes with small buildings must not be scaled.
+    if o.site.occupancy != Occupancy.R3:
+        return None
     have = [m for m in found.get(o.site.id, []) if structure_kind(m) == "building"]
-    if o.site.occupancy != Occupancy.R3 and not (have and _median([_fp_area_m2(m.footprint) for m in have]) < 300.0):
-        return None  # apartments: units share large buildings
+    if len(have) >= 5:  # the parcel already brought in the property's buildings
+        return None
     zipcode = (_address_with_zip(o).rsplit(" ", 1)[-1:] or [""])[0]
     zipcode = zipcode if re.fullmatch(r"\d{5}", zipcode) else ""
 
@@ -656,7 +660,8 @@ def _median(xs: list[float]) -> float:
     return xs[len(xs) // 2] if xs else 0.0
 
 
-def _scale_to_units(o: SiteOutcome, homes_per_building: list[int], min_sample: int) -> None:
+def _scale_to_units(o: SiteOutcome, homes_per_building: list[int], min_sample: int,
+                    max_kw_per_home: float = 20.0) -> None:
     """Scale the sampled community's rooftop kW to the input's unit count."""
     if len(homes_per_building) != len(o.estimates):
         return
@@ -664,12 +669,16 @@ def _scale_to_units(o: SiteOutcome, homes_per_building: list[int], min_sample: i
     homes, kw = sum(h for _e, h in rows), sum(e.dc_kw for e, _h in rows)
     if not homes or homes >= o.site.units:
         return
+    if len(rows) < min_sample:  # too few to stand for the community: report what was found, unscaled
+        o.manual_review.append(f"community_sample_only_{len(rows)}_buildings_not_scaled")
+        return
+    if kw / homes > max_kw_per_home:  # homes per building undercounted (e.g. one address for a fourplex)
+        o.manual_review.append(f"community_{kw / homes:.0f}_kw_per_home_implausible_not_scaled")
+        return
     factor = o.site.units / homes
     for e, _h in rows:
         _scale_estimate(e, factor)
     o.reasons.append(f"community_{o.site.units}_homes_from_{homes}_sampled_{kw / homes:.1f}_kw_per_home")
-    if len(rows) < min_sample:
-        o.manual_review.append(f"community_sized_from_only_{len(rows)}_buildings")
 
 
 def _scale_estimate(e: SiteEstimate, factor: float) -> None:

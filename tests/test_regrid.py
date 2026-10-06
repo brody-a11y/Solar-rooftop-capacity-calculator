@@ -389,7 +389,7 @@ def test_community_sizes_same_owner_sample_and_scales_to_units(footprints):
     parcels = _LotParcels()
     site = Site("Altura", address="1 Oak St, San Antonio, TX 78233", lat=lat, lon=lon, occupancy=Occupancy.R3, units=60)
     out = size_sites([site], footprints, GeometricEstimator(), workers=1, progress=lambda *_: None, parcels=parcels,
-                     unit_addresses=_Homes())[0]
+                     unit_addresses=_Homes(), community_sample=2)[0]
     assert sorted(m.overture_id for m in out.matches) == ["apt-a", "apt-b"]  # not the neighbour's building
     assert "community_sampled_2_buildings_within_150m" in out.reasons
     per_home = [r for r in out.reasons if r.startswith("community_60_homes_from_6_sampled_")]
@@ -397,7 +397,26 @@ def test_community_sizes_same_owner_sample_and_scales_to_units(footprints):
     kw_per_home = float(per_home[0].split("_sampled_")[1].split("_kw")[0])
     assert abs(out.dc_kw - 60 * kw_per_home) < 0.1 * out.dc_kw
     assert parcels.calls == 2  # the site's parcel + one ownership check
-    assert "community_sized_from_only_2_buildings" in out.manual_review
+    assert not out.manual_review or not any(r.startswith("community_") for r in out.manual_review)
+
+
+def test_community_too_small_a_sample_is_not_scaled(footprints):
+    from rooftop_solar.models import Occupancy
+
+    lon, lat = ll(220, 7)
+    site = Site("Altura", address="1 Oak St, San Antonio, TX 78233", lat=lat, lon=lon, occupancy=Occupancy.R3, units=60)
+    out = size_sites([site], footprints, GeometricEstimator(), workers=1, progress=lambda *_: None,
+                     parcels=_LotParcels(), unit_addresses=_Homes())[0]  # default sample 10, only 2 found
+    assert "community_sample_only_2_buildings_not_scaled" in out.manual_review
+    assert not any(r.startswith("community_60_homes") for r in out.reasons)
+
+
+def test_community_not_used_without_single_family_housing_type(footprints):
+    lon, lat = ll(220, 7)
+    parcels = _LotParcels()
+    out = size_sites([Site("Senior", lat=lat, lon=lon, units=160)], footprints, GeometricEstimator(), workers=1,
+                     progress=lambda *_: None, parcels=parcels, unit_addresses=_Homes())[0]
+    assert parcels.calls == 1 and not any(r.startswith("community_") for r in out.reasons + out.manual_review)
 
 
 def test_community_skips_other_owners_buildings(footprints):
