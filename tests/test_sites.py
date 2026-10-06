@@ -4,7 +4,7 @@ import pytest
 
 from rooftop_solar import GeometricEstimator, Occupancy
 from rooftop_solar.cli import main
-from rooftop_solar.sites import read_sites, size_sites
+from rooftop_solar.sites import Site, read_sites, size_sites
 from rooftop_solar.sources import geocode as geocode_mod
 from rooftop_solar.sources.geocode import Geocoder
 
@@ -298,3 +298,14 @@ def test_redact_hides_keys_in_error_text():
     msg = "403 Forbidden for url: https://x/v1/dataLayers:get?radiusMeters=88&key=AIzaSECRET123&view=IMAGERY"
     assert "AIzaSECRET123" not in redact(msg) and "key=***" in redact(msg)
     assert redact("token=abc def") == "token=*** def"
+
+
+def test_too_few_kw_per_unit_goes_to_manual_review(footprints):
+    lon, lat = ll(220, 7)
+    big = size_sites([Site("Oak", lat=lat, lon=lon, units=5000)], footprints, GeometricEstimator(), workers=1,
+                     progress=lambda *_: None)[0]
+    assert any(r.endswith("_kw_per_unit_buildings_likely_missing") for r in big.manual_review)
+    assert big.row()["kw_per_unit"] < 0.1
+    ok = size_sites([Site("Oak", lat=lat, lon=lon, units=40)], footprints, GeometricEstimator(), workers=1,
+                    progress=lambda *_: None)[0]
+    assert not any("kw_per_unit" in r for r in ok.manual_review)

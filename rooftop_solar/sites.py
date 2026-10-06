@@ -176,6 +176,7 @@ class SiteOutcome:
             "parcel_acres": getattr(self.parcel, "acres", "") or "",
             "buildings": len(self.buildings),
             "units_in_input": self.site.units or "",
+            "kw_per_unit": round(self.dc_kw / self.site.units, 2) if self.site.units else "",
             "units_in_address_data": self.listed_units or "",
             "units_in_parcel_records": self.parcel_units or "",
             "dc_kw": round(self.dc_kw, 2),
@@ -315,6 +316,7 @@ def size_sites(
     carport_min_kw: float = 15.0,
     max_owner_lookups: int = 10,
     community_sample: int = 10,
+    min_kw_per_unit: float = 0.1,
     equipment_client=None,
     stale_imagery_years: float = 6.0,
     min_imagery_coverage: float = 0.25,
@@ -586,6 +588,11 @@ def size_sites(
                 e.reasons.append(f"outline_only_scaled_{outline_only_factor:g}")
     for o in outcomes:
         o.manual_review = imagery_concerns(o, stale_imagery_years, min_imagery_coverage, today or date.today())
+        # Under ~0.1 kW per home: the buildings found can't be the whole property
+        # (garden and mid-rise MaxFit designs run ~0.7-3 kW per unit).
+        if (o.site.units and o.buildings and min_kw_per_unit > 0 and o.site.id not in community
+                and o.dc_kw < min_kw_per_unit * o.site.units):
+            o.manual_review.append(f"only_{o.dc_kw / o.site.units:.2f}_kw_per_unit_buildings_likely_missing")
         if o.site.id in community:
             _scale_to_units(o, community[o.site.id], min_sample=min(5, community_sample))
     return outcomes
