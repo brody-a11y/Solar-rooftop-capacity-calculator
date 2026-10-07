@@ -319,7 +319,7 @@ def test_redact_hides_keys_in_error_text():
 def test_too_few_kw_per_unit_goes_to_manual_review(footprints):
     lon, lat = ll(220, 7)
     big = size_sites([Site("Oak", lat=lat, lon=lon, units=5000)], footprints, GeometricEstimator(), workers=1,
-                     progress=lambda *_: None)[0]
+                     progress=lambda *_: None, min_floor_m2_per_unit=0)[0]
     assert any(r.endswith("_kw_per_unit_buildings_likely_missing") for r in big.manual_review)
     assert big.row()["kw_per_unit"] < 0.1
     ok = size_sites([Site("Oak", lat=lat, lon=lon, units=40)], footprints, GeometricEstimator(), workers=1,
@@ -341,3 +341,31 @@ def test_bad_coordinates_skip_the_row_instead_of_stopping(tmp_path, capsys):
     sites = read_sites(str(p))
     assert [s.id for s in sites] == ["A", "C"] and sites[1].lat is None
     assert "row skipped" in capsys.readouterr().out
+
+
+def test_buildings_too_small_for_the_units_get_a_units_estimate(footprints):
+    lon, lat = ll(220, 7)
+    big = size_sites([Site("Oak", lat=lat, lon=lon, units=5000)], footprints, GeometricEstimator(), workers=1,
+                     progress=lambda *_: None)[0]
+    row = big.row()
+    assert row["floor_m2_per_unit"] < 15
+    assert row["kw_estimate_from_units"] == pytest.approx(5000 * 1.7)
+    assert row["best_estimate_kw"] == pytest.approx(5000 * 1.7) and row["estimate_basis"] == "units"
+    assert row["dc_kw"] < row["best_estimate_kw"]  # the roof figure is still reported as found
+    assert any(r.startswith("buildings_found_hold_") for r in big.manual_review)
+    assert not any(r.endswith("_kw_per_unit_buildings_likely_missing") for r in big.manual_review)
+    ok = size_sites([Site("Oak", lat=lat, lon=lon, units=40)], footprints, GeometricEstimator(), workers=1,
+                    progress=lambda *_: None)[0].row()
+    assert ok["kw_estimate_from_units"] == "" and ok["best_estimate_kw"] == ok["dc_kw"] and ok["estimate_basis"] == "roof"
+    off = size_sites([Site("Oak", lat=lat, lon=lon, units=5000)], footprints, GeometricEstimator(), workers=1,
+                     progress=lambda *_: None, kw_per_unit_fallback=0)[0].row()
+    assert off["kw_estimate_from_units"] == "" and off["best_estimate_kw"] == off["dc_kw"]
+
+
+def test_no_building_found_with_units_gets_a_units_estimate(footprints):
+    lon, lat = ll(5000, 5000)  # far from every test building
+    out = size_sites([Site("New", lat=lat, lon=lon, units=200)], footprints, GeometricEstimator(), workers=1,
+                     progress=lambda *_: None)[0]
+    row = out.row()
+    assert "no_building_found" in out.manual_review
+    assert row["dc_kw"] == 0 and row["best_estimate_kw"] == pytest.approx(340.0)

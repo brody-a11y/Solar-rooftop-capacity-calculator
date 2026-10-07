@@ -130,6 +130,8 @@ class SiteOutcome:
     manual_review_extra: list[str] = field(default_factory=list)  # review reasons found while sizing
     listed_units: int | None = None  # unit address records found for the site's address
     parcel_units: int | None = None  # units in the county parcel records (Regrid), where recorded
+    floor_m2_per_unit: float | None = None  # floor area of the buildings found, per input unit
+    units_estimate_kw: float | None = None  # units x typical kW/unit, when the buildings found are too few
 
     def _counted(self):
         flags = self.counted or [True] * len(self.estimates)
@@ -187,6 +189,10 @@ class SiteOutcome:
             "units_in_address_data": self.listed_units or "",
             "units_in_parcel_records": self.parcel_units or "",
             "dc_kw": round(self.dc_kw, 2),
+            "best_estimate_kw": round(max(self.dc_kw, self.units_estimate_kw or 0.0), 2),
+            "estimate_basis": "units" if self.units_estimate_kw and self.units_estimate_kw > self.dc_kw else "roof",
+            "kw_estimate_from_units": round(self.units_estimate_kw, 1) if self.units_estimate_kw else "",
+            "floor_m2_per_unit": round(self.floor_m2_per_unit, 1) if self.floor_m2_per_unit is not None else "",
             "raw_kw": round(sum(e.raw_kw for e in self._counted()), 2),
             "module_count": sum(e.primary.module_count for e in self._counted() if e.primary),
             "north_faces_kw_not_counted": round(sum(e.google.details.get("poleward_face_kw", 0) for e in self._counted()
@@ -347,6 +353,9 @@ def size_sites(
     stale_imagery_years: float = 6.0,
     min_imagery_coverage: float = 0.25,
     outline_only_factor: float = 0.55,
+    min_floor_m2_per_unit: float = 15.0,
+    kw_per_unit_fallback: float = 1.7,
+    review_imagery_flags: bool = False,
     today: date | None = None,
 ) -> list[SiteOutcome]:
     outcomes = [SiteOutcome(s) for s in sites]
@@ -627,6 +636,14 @@ def size_sites(
     for o in outcomes:
         o.manual_review = imagery_concerns(o, stale_imagery_years, min_imagery_coverage, today or date.today())
         o.manual_review += [r for r in o.manual_review_extra if r not in o.manual_review]
+        if not review_imagery_flags:
+            # Reviewed by hand on 515 Greystar sites (Oct 2026), these were kept as
+            # sized nearly every time: old imagery, outline-only roofs, sparse Google
+            # panels. They stay in the reasons column, not the manual-review list.
+            demoted = [r for r in o.manual_review if r.startswith(_DEMOTED_REVIEW)
+                       or r.endswith("_large_building_without_google_data_sized_from_outline")]
+            o.manual_review = [r for r in o.manual_review if r not in demoted]
+            o.reasons += [r for r in demoted if r not in o.reasons]
         # Under ~0.1 kW per home: the buildings found can't be the whole property
         # (garden and mid-rise MaxFit designs run ~0.7-3 kW per unit).
         if (o.site.units and o.buildings and min_kw_per_unit > 0 and o.site.id not in community
@@ -641,6 +658,7 @@ def size_sites(
                 o.manual_review.append(f"one_building_{o.dc_kw / o.site.units:.1f}_kw_per_unit_check_match")
             elif classes and classes <= _NONRESIDENTIAL_CLASSES:
                 o.manual_review.append("matched_building_mapped_as_" + sorted(classes)[0] + "_check_match")
+        _units_estimate(o, community, min_floor_m2_per_unit, kw_per_unit_fallback)
         if o.site.id in community:
             _scale_to_units(o, community[o.site.id], min_sample=min(5, community_sample))
     return outcomes
@@ -752,6 +770,40 @@ def _address_with_zip(o: SiteOutcome) -> str:
         if m:
             return f"{addr} {m.group(1)}"
     return addr
+
+
+_DEMOTED_REVIEW = ("google_imagery_", "most_roof_area_sized_from_outlines", "no_google_imagery_sized_from_outline",
+                   "google_sees_")
+
+
+def _units_estimate(o: SiteOutcome, community: dict, min_floor_m2: float, kw_per_unit: float,
+                    storey_m: float = 3.3, default_storeys: int = 2) -> None:
+    """Units x typical kW/unit when the buildings found can't hold the input's units.
+
+    An apartment needs ~50-100 m2 of floor; buildings holding under min_floor_m2 per
+    unit (footprint x storeys from mapped heights, 2 storeys where unmapped) are a
+    fraction of the property: a leasing office, one phase, or new construction the
+    maps don't show yet. On the Oct 2026 Greystar review, hand estimates for such
+    sites ran a median 1.7 kW/unit, and nearly all were within 30% of units x 1.7.
+    """
+    units = o.site.units
+    if not units or not o.geocode or o.site.id in community or o.site.occupancy == Occupancy.COMMERCIAL:
+        return
+    floor = 0.0
+    for b, m in zip(o.buildings, o.matches or [None] * len(o.buildings)):
+        if b.structure != "building":
+            continue
+        h = getattr(m, "height_m", None) if m is not None else None
+        storeys = max(1, round(h / storey_m)) if h else default_storeys
+        floor += _area_m2(b) * storeys
+    o.floor_m2_per_unit = floor / units
+    if min_floor_m2 > 0 and kw_per_unit > 0 and o.floor_m2_per_unit < min_floor_m2:
+        o.units_estimate_kw = units * kw_per_unit
+        if o.units_estimate_kw > o.dc_kw:
+            reason = (f"buildings_found_hold_{o.floor_m2_per_unit:.0f}_m2_floor_per_unit_"
+                      f"estimated_{kw_per_unit:g}_kw_per_unit")
+            o.manual_review = [r for r in o.manual_review if not r.endswith("_kw_per_unit_buildings_likely_missing")]
+            o.manual_review.append(reason)
 
 
 def _area_m2(b: Building) -> float:

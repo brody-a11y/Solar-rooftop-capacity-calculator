@@ -185,7 +185,9 @@ def test_outline_only_buildings_not_counted_when_google_covers_parcel(footprints
     big = size_sites([Site("Oak", lat=lat, lon=lon)], footprints, GeometricEstimator(), google_client=Client(),
                      workers=1, progress=lambda *_: None, parcels=_FakeParcels(), big_building_m2=500)[0]
     assert big.counted == [True, True]
-    assert "1_large_building_without_google_data_sized_from_outline" in big.manual_review
+    # Kept as sized on hand review nearly every time: noted, not sent to manual review.
+    assert "1_large_building_without_google_data_sized_from_outline" in big.reasons
+    assert "1_large_building_without_google_data_sized_from_outline" not in big.manual_review
 
 
 def _dataset_with_carports(tmp_path):
@@ -282,7 +284,7 @@ def test_outline_only_main_building_counted_scaled_and_flagged(footprints):
     assert out.counted == [True, True]
     wh = next(e for b, e in zip(out.buildings, out.estimates) if b.id.endswith("warehouse") or e.method == "geometric")
     assert wh.dc_kw == pytest.approx(0.55 * wh.raw_kw)
-    assert "most_roof_area_sized_from_outlines" in out.manual_review
+    assert "most_roof_area_sized_from_outlines" in out.reasons and not out.manual_review
 
 
 def test_same_owner_matches_entity_variants_and_mailing_address():

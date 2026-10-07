@@ -213,7 +213,7 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
         search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
         google_max_points=args.google_max_points, unit_addresses=_unit_addresses(args, sites),
         parcels=_parcels(args), include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio,
-        carport_min_kw=args.carport_min_kw, community_sample=args.community_sample, community_owner_checks=args.community_owner_checks,
+        carport_min_kw=args.carport_min_kw, community_sample=args.community_sample, community_owner_checks=args.community_owner_checks, kw_per_unit_fallback=args.kw_per_unit_fallback, min_floor_m2_per_unit=args.min_floor_m2_per_unit, review_imagery_flags=args.review_imagery_flags,
         equipment_client=_equipment(args),
     )
     site_rows = [o.row() for o in outcomes]
@@ -232,7 +232,7 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
             google_max_points=args.google_max_points, unit_addresses=_unit_addresses(args, sites),
             parcels=_parcels(args), include_carports=not args.no_carports,
             carport_min_energy_ratio=args.carport_min_energy_ratio, carport_min_kw=args.carport_min_kw,
-            community_sample=args.community_sample, community_owner_checks=args.community_owner_checks, equipment_client=_equipment(args), progress=lambda *_: None,
+            community_sample=args.community_sample, community_owner_checks=args.community_owner_checks, kw_per_unit_fallback=args.kw_per_unit_fallback, min_floor_m2_per_unit=args.min_floor_m2_per_unit, review_imagery_flags=args.review_imagery_flags, equipment_client=_equipment(args), progress=lambda *_: None,
         )
         for row, o in zip(site_rows, alt):
             row[column] = round(o.dc_kw, 2)
@@ -291,7 +291,7 @@ def cmd_accuracy(args: argparse.Namespace) -> int:
             search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
             google_max_points=args.google_max_points, unit_addresses=units, parcels=parcels,
             include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio,
-            carport_min_kw=args.carport_min_kw, community_sample=args.community_sample, community_owner_checks=args.community_owner_checks, progress=progress,
+            carport_min_kw=args.carport_min_kw, community_sample=args.community_sample, community_owner_checks=args.community_owner_checks, kw_per_unit_fallback=args.kw_per_unit_fallback, min_floor_m2_per_unit=args.min_floor_m2_per_unit, review_imagery_flags=args.review_imagery_flags, progress=progress,
             equipment_client=equipment,
         )
         return outcomes, compare(truth, outcomes, geo.design.module.watts_dc)
@@ -520,6 +520,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="single-family rental communities (input Units far above the homes found): size this "
                              "many nearby same-owner buildings and scale kW per home to the unit count (0 = off; "
                              "each ownership check is one Regrid record)")
+    design.add_argument("--kw-per-unit-fallback", type=float, default=1.7,
+                        help="when the buildings found are too small for the input Units, also report Units x this "
+                             "kW as best_estimate_kw (0 = off)")
+    design.add_argument("--min-floor-m2-per-unit", type=float, default=15.0,
+                        help="floor area per unit (footprints x storeys) under which the buildings found are "
+                             "treated as only part of the property")
+    design.add_argument("--review-imagery-flags", action="store_true",
+                        help="also send old imagery, outline-only roofs and sparse Google panels to manual review")
     design.add_argument("--no-residential-alternative", action="store_true", help="apply commercial rules to pitched R-2 roofs")
 
     s = sub.add_parser("size", parents=[design], help="size every building in a KML/KMZ or GeoJSON file")
