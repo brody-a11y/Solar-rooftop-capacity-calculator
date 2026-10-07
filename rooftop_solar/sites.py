@@ -39,6 +39,7 @@ _HEADERS = {
     "occupancy": ("occupancy", "building type", "type", "property type", "housing type", "housingtype"),
     "units": ("units", "unit count", "number of units", "# units", "num units", "total units"),
     "group": ("group", "property group", "parent property", "main address", "complex"),
+    "built": ("built", "year built", "yearbuilt", "built year", "year completed", "completed"),
 }
 
 
@@ -70,6 +71,7 @@ class Site:
     occupancy: Occupancy | None = None
     group: str = ""  # rows sharing a group are one property (e.g. one row per building)
     units: int | None = None  # homes/apartments at the property, if the input lists them
+    year_built: int | None = None
 
 
 def read_sites(path: str) -> list[Site]:
@@ -111,8 +113,10 @@ def read_sites(path: str) -> list[Site]:
             if seen[sid] > 1:
                 sid = f"{sid} ({seen[sid]})"
             units = re.sub(r"[^0-9.]", "", get("units"))
+            built = re.search(r"\b(1[89]\d\d|20\d\d)\b", get("built"))
             sites.append(Site(sid, address, lat, lon, _occupancy_from_text(get("occupancy")), get("group"),
-                              int(float(units)) if units and float(units) > 0 else None))
+                              int(float(units)) if units and float(units) > 0 else None,
+                              int(built.group(1)) if built else None))
     return sites
 
 
@@ -193,6 +197,8 @@ class SiteOutcome:
             "estimate_basis": "units" if self.units_estimate_kw and self.units_estimate_kw > self.dc_kw else "roof",
             "kw_estimate_from_units": round(self.units_estimate_kw, 1) if self.units_estimate_kw else "",
             "floor_m2_per_unit": round(self.floor_m2_per_unit, 1) if self.floor_m2_per_unit is not None else "",
+            "year_built": self.site.year_built or "",
+            "existing_solar_check": existing_solar_check(self),
             "raw_kw": round(sum(e.raw_kw for e in self._counted()), 2),
             "module_count": sum(e.primary.module_count for e in self._counted() if e.primary),
             "north_faces_kw_not_counted": round(sum(e.google.details.get("poleward_face_kw", 0) for e in self._counted()
@@ -770,6 +776,28 @@ def _address_with_zip(o: SiteOutcome) -> str:
         if m:
             return f"{addr} {m.group(1)}"
     return addr
+
+
+_CA_ADDRESS = re.compile(r",\s*(CA|California)\b(\s+9\d{4})?", re.IGNORECASE)
+
+
+def existing_solar_check(o: SiteOutcome, first_year: int = 2020) -> str:
+    """Why a California site may already have solar, else "".
+
+    California's energy code has required solar on new low-rise homes and apartments
+    since 2020 and on all new multifamily since 2023. On the Oct 2026 Greystar review,
+    every site omitted for existing solar was built 2023 or later or was too new for
+    the map data; none built before 2020 had it.
+    """
+    text = " ".join(filter(None, (o.site.address, o.geocode.matched_address if o.geocode else "")))
+    if not _CA_ADDRESS.search(text):
+        return ""
+    if o.site.year_built and o.site.year_built >= first_year:
+        return f"built_{o.site.year_built}"
+    if o.site.year_built is None and o.geocode and (
+            not o.buildings or any(r.startswith(("google_sees_", "no_google_imagery")) for r in o.reasons + o.manual_review)):
+        return "new_construction"
+    return ""
 
 
 _DEMOTED_REVIEW = ("google_imagery_", "most_roof_area_sized_from_outlines", "no_google_imagery_sized_from_outline",

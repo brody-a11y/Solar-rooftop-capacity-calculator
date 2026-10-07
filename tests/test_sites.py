@@ -369,3 +369,23 @@ def test_no_building_found_with_units_gets_a_units_estimate(footprints):
     row = out.row()
     assert "no_building_found" in out.manual_review
     assert row["dc_kw"] == 0 and row["best_estimate_kw"] == pytest.approx(340.0)
+
+
+def test_existing_solar_check_for_new_california_buildings(tmp_path, footprints):
+    from rooftop_solar.sites import SiteOutcome, existing_solar_check
+    from rooftop_solar.sources.geocode import GeocodeResult
+
+    p = tmp_path / "s.csv"
+    p.write_text("Name,Address,Units,Built\nNew,\"1 A St, San Diego, CA 92101\",100,2025\n"
+                 "Old,\"2 B St, San Diego, CA 92101\",100,1987\nTX,\"3 C St, Austin, TX 78701\",100,2025\n")
+    new, old, tx = read_sites(str(p))
+    assert (new.year_built, old.year_built) == (2025, 1987)
+    assert existing_solar_check(SiteOutcome(new)) == "built_2025"
+    assert existing_solar_check(SiteOutcome(old)) == ""
+    assert existing_solar_check(SiteOutcome(tx)) == ""  # the solar mandate is California's
+    unbuilt = SiteOutcome(Site("Lease-up", "4 D St, Irvine, CA 92618"), geocode=GeocodeResult(33.7, -117.8, "google", "rooftop", ""))
+    assert existing_solar_check(unbuilt) == "new_construction"  # not in the map data yet
+    lon, lat = ll(220, 7)
+    row = size_sites([Site("Oak", "5 E St, Fresno, CA 93701", lat=lat, lon=lon, units=40, year_built=2024)],
+                     footprints, GeometricEstimator(), workers=1, progress=lambda *_: None)[0].row()
+    assert row["existing_solar_check"] == "built_2024" and row["year_built"] == 2024
