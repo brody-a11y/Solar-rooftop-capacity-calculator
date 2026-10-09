@@ -389,3 +389,22 @@ def test_existing_solar_check_for_new_california_buildings(tmp_path, footprints)
     row = size_sites([Site("Oak", "5 E St, Fresno, CA 93701", lat=lat, lon=lon, units=40, year_built=2024)],
                      footprints, GeometricEstimator(), workers=1, progress=lambda *_: None)[0].row()
     assert row["existing_solar_check"] == "built_2024" and row["year_built"] == 2024
+
+
+def test_community_sample_skips_stores_clinics_and_amenity_buildings():
+    from shapely.geometry import box
+
+    from rooftop_solar.sites import _home_like
+    from rooftop_solar.sources.overture import FootprintMatch
+    from .helpers import FRAME
+
+    def m(i, w, h, cls=None, height=6.0):
+        return FootprintMatch(f"b{i}", FRAME.to_lonlat(box(0, 0, w, h)), float(i), cls, None, height, None, None)
+
+    cands = [m(0, 90, 90, "hospital"), m(1, 40, 30), m(2, 30, 30, height=20.0)]  # clinic, clubhouse, tower
+    cands += [m(i, 12, 15) for i in range(3, 12)]  # ~180 m2 houses
+    picked = [c.overture_id for c in _home_like(cands, 6)]
+    assert picked[:3] == ["b3", "b4", "b5"] and len(picked) == 9
+    assert not {"b0", "b1", "b2"} & set(picked)
+    rows = [m(i, 36, 10) for i in range(5)]  # 360 m2 townhome rows are kept
+    assert len(_home_like(rows, 6)) == 5

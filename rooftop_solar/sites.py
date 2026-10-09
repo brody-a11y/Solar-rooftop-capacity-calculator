@@ -700,8 +700,8 @@ def _community_sample(o: SiteOutcome, found: dict, footprints, parcels, unit_add
     radius = min(1000.0, max(150.0, 1.6 * math.sqrt(units * 450.0 / math.pi)))
     near = footprints.find({o.site.id: (o.geocode.lon, o.geocode.lat)}, search_m=radius, campus_m=radius).get(o.site.id, [])
     ids = {m.overture_id for m in found.get(o.site.id, [])}
-    cands = sorted((m for m in near if m.overture_id not in ids and structure_kind(m) == "building"
-                    and _fp_area_m2(m.footprint) <= 2000.0), key=lambda m: m.distance_m)
+    cands = _home_like(sorted((m for m in near if m.overture_id not in ids and structure_kind(m) == "building"),
+                              key=lambda m: m.distance_m), n)
     owner = o.parcel if parcels is not None and o.parcel is not None else None
     picked, checked, other = [], 0, 0
     for m in cands:
@@ -725,6 +725,25 @@ def _community_sample(o: SiteOutcome, found: dict, footprints, parcels, unit_add
     is_home = [structure_kind(m) == "building" for m in out]
     counts = iter(homes([m for m, h in zip(out, is_home) if h]))
     return out, [next(counts) if h else 0 for h in is_home]
+
+
+def _home_like(cands: list[FootprintMatch], n: int, max_m2: float = 1200.0, max_height_m: float = 13.0,
+               pool: int = 4) -> list[FootprintMatch]:
+    """Nearby buildings that look like the community's homes, nearest first.
+
+    Community addresses often sit on an arterial road beside stores, a clinic or an
+    amenity center (Oct 2026 sample: a hospital, a storage site and a car lot were
+    picked before any home). Drop mapped non-residential classes, tall or very large
+    buildings, then keep those within 0.5-2x the median footprint of the nearest
+    pool x n, so a lone clubhouse or shop among houses or townhome rows drops out.
+    """
+    ok = [m for m in cands if (m.building_class or "") not in _NONRESIDENTIAL_CLASSES
+          and (m.height_m is None or m.height_m <= max_height_m) and _fp_area_m2(m.footprint) <= max_m2]
+    if not ok:
+        return []
+    areas = sorted(_fp_area_m2(m.footprint) for m in ok[:pool * n])
+    mid = areas[len(areas) // 2]
+    return [m for m in ok if 0.5 * mid <= _fp_area_m2(m.footprint) <= 2.0 * mid]
 
 
 def _median(xs: list[float]) -> float:
