@@ -18,7 +18,7 @@ from .sizing import DesignConfig, GeometricEstimator
 from .sources.geojson_io import load_buildings as load_geojson_buildings
 from .sources.geojson_io import write_layouts as write_geojson_layouts
 from .sources.kml_io import load_kml_buildings, write_kml_layouts
-from .sites import group_rows, read_sites, size_sites
+from .sites import group_rows, read_sites, repin_sites, size_sites
 from .sources.geocode import Geocoder
 from .sources.google_solar import GoogleSolarClient
 from .sources.overture import OvertureFootprints
@@ -208,14 +208,28 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
         else:
             geocoder = Geocoder(args.geocoder)
     footprints = OvertureFootprints(workers=args.workers)
-    outcomes = size_sites(
-        sites, footprints, geometric, geocoder, client, calibrator, ReviewPolicy(),
+    shared = dict(
         search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
         google_max_points=args.google_max_points, unit_addresses=_unit_addresses(args, sites),
         parcels=_parcels(args), include_carports=not args.no_carports, carport_min_energy_ratio=args.carport_min_energy_ratio,
-        carport_min_kw=args.carport_min_kw, community_sample=args.community_sample, community_owner_checks=args.community_owner_checks, kw_per_unit_fallback=args.kw_per_unit_fallback, min_floor_m2_per_unit=args.min_floor_m2_per_unit, review_imagery_flags=args.review_imagery_flags,
-        equipment_client=_equipment(args),
+        carport_min_kw=args.carport_min_kw, community_sample=args.community_sample, community_owner_checks=args.community_owner_checks,
+        kw_per_unit_fallback=args.kw_per_unit_fallback, min_floor_m2_per_unit=args.min_floor_m2_per_unit,
+        review_imagery_flags=args.review_imagery_flags, equipment_client=_equipment(args),
     )
+    outcomes = size_sites(sites, footprints, geometric, geocoder, client, calibrator, ReviewPolicy(), **shared)
+    if not args.no_repin:
+        places = None
+        key = os.environ.get(args.google_key_env)
+        if args.google and key and not args.no_places:
+            from .sources.places import PlacesClient
+
+            places = PlacesClient(key)
+        repin_sites(sites, outcomes, lambda trial: size_sites(trial, footprints, geometric, geocoder, client, calibrator,
+                                                              ReviewPolicy(), progress=lambda *_: None, **shared),
+                    footprints, places, args.min_floor_m2_per_unit, progress=lambda m: print(m, flush=True))
+        if places is not None and places.errors:
+            print(f"Google Places search failed {len(places.errors)} times (is the Places API (New) enabled on your key?); "
+                  f"used the nearest building instead. Google said: {places.errors[0]}", file=sys.stderr)
     site_rows = [o.row() for o in outcomes]
     # Same sites under alternative rules, as extra columns (saved lookups are
     # reused, so these cost time, not API calls).
@@ -226,14 +240,8 @@ def cmd_size_sites(args: argparse.Namespace) -> int:
             print(f"Skipping alternative '{spec}': {exc}", file=sys.stderr)
             continue
         print(f"Re-sizing with {column.replace('_', ' ')}...", flush=True)
-        alt = size_sites(
-            sites, footprints, GeometricEstimator(rules, geometric.design), geocoder, client, calibrator, ReviewPolicy(),
-            search_m=args.search_m, campus_m=args.campus_radius_m, workers=args.workers,
-            google_max_points=args.google_max_points, unit_addresses=_unit_addresses(args, sites),
-            parcels=_parcels(args), include_carports=not args.no_carports,
-            carport_min_energy_ratio=args.carport_min_energy_ratio, carport_min_kw=args.carport_min_kw,
-            community_sample=args.community_sample, community_owner_checks=args.community_owner_checks, kw_per_unit_fallback=args.kw_per_unit_fallback, min_floor_m2_per_unit=args.min_floor_m2_per_unit, review_imagery_flags=args.review_imagery_flags, equipment_client=_equipment(args), progress=lambda *_: None,
-        )
+        alt = size_sites(sites, footprints, GeometricEstimator(rules, geometric.design), geocoder, client, calibrator,
+                         ReviewPolicy(), progress=lambda *_: None, **shared)
         for row, o in zip(site_rows, alt):
             row[column] = round(o.dc_kw, 2)
     _write_csv(site_rows, args.out, "site_id")
@@ -544,6 +552,10 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument("--geocoder", choices=["auto", "overture", "census", "google"], default="auto",
                     help="auto: Overture address points, then Census (free, US); google: billed")
     ss.add_argument("--search-m", type=float, default=40.0, help="max distance from the address point to a building")
+    ss.add_argument("--no-repin", action="store_true",
+                    help="don't re-size sites whose address point missed the property from a better point")
+    ss.add_argument("--no-places", action="store_true",
+                    help="re-pin from the nearest building only, without Google Places searches (billed per search)")
     ss.add_argument("--alternatives", default="equipment:1.5,equipment:1,pitched:ring:6",
                     help="extra kW columns under alternative rules, comma-separated: equipment:<ft>, "
                          "pitched:<ridge|ridge_pathway|ring>:<inches>; '' for none")

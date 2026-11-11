@@ -408,3 +408,76 @@ def test_community_sample_skips_stores_clinics_and_amenity_buildings():
     assert not {"b0", "b1", "b2"} & set(picked)
     rows = [m(i, 36, 10) for i in range(5)]  # 360 m2 townhome rows are kept
     assert len(_home_like(rows, 6)) == 5
+
+
+class _PointGeocoder:
+    """Geocodes every address to one local point (a pin in the street)."""
+
+    def __init__(self, x, y):
+        self.lon, self.lat = ll(x, y)
+
+    def geocode(self, address):
+        from rooftop_solar.sources.geocode import GeocodeResult
+
+        return GeocodeResult(self.lat, self.lon, "google", "approximate", address)
+
+    def save(self):
+        pass
+
+
+class _FakePlaces:
+    def __init__(self, name, x, y):
+        from rooftop_solar.sources.places import Place
+
+        lon, lat = ll(x, y)
+        self.calls = 0
+        self.place = Place(name, lat, lon, ["apartment_complex"], "")
+
+    def search(self, query, lat, lon, radius_m=2000.0):
+        self.calls += 1
+        return [self.place]
+
+
+def _size_and_repin(footprints, sites, places=None):
+    from rooftop_solar.sites import repin_sites
+
+    geo = _PointGeocoder(300, 7)  # 60 m east of apt-a, nothing within 40 m
+    resize = lambda s: size_sites(s, footprints, GeometricEstimator(), geo, workers=1, progress=lambda *_: None)
+    out = resize(sites)
+    moved = repin_sites(sites, out, resize, footprints, places, progress=lambda *_: None)
+    return out, moved
+
+
+def test_pin_in_the_street_moves_to_the_nearest_building(footprints):
+    sites = [Site("Oak Grove", "1 Oak St, Los Angeles, CA 90001", units=20)]
+    out, moved = _size_and_repin(footprints, sites)
+    assert moved == 1 and out[0].buildings
+    assert out[0].reasons[0].startswith("repinned_by_nearest_building_")
+    assert out[0].row()["location_source"].startswith("repin_nearest_building")
+    assert sites[0].lat is not None  # later passes (alternative rules) use the moved point
+
+
+def test_pin_moves_to_the_place_listed_under_the_property_name(footprints):
+    places = _FakePlaces("Oak Grove Apartments", 220, 37)  # on apt-b
+    sites = [Site("Oak Grove", "1 Oak St, Los Angeles, CA 90001", units=20)]
+    out, moved = _size_and_repin(footprints, sites, places)
+    assert moved == 1 and places.calls == 1
+    assert out[0].reasons[0].startswith("repinned_by_places_")
+    assert "apt-b" in {m.overture_id for m in out[0].matches}
+
+
+def test_a_place_with_another_name_is_not_used(footprints):
+    places = _FakePlaces("Chevron Gas Station", 20, 20)  # on the warehouse
+    sites = [Site("Oak Grove", "1 Oak St, Los Angeles, CA 90001", units=20)]
+    out, _ = _size_and_repin(footprints, sites, places)
+    assert not out[0].reasons[0].startswith("repinned_by_places_")
+    assert "warehouse" not in {m.overture_id for m in out[0].matches}
+
+
+def test_sites_with_input_coordinates_are_not_repinned(footprints):
+    from rooftop_solar.sites import needs_repin
+
+    lon, lat = ll(300, 7)
+    o = size_sites([Site("Oak Grove", lat=lat, lon=lon, units=20)], footprints, GeometricEstimator(), workers=1,
+                   progress=lambda *_: None)[0]
+    assert not o.buildings and not needs_repin(o)

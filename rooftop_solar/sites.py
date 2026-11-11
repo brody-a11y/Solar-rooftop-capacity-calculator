@@ -11,6 +11,7 @@ import csv
 import math
 import re
 from concurrent.futures import ThreadPoolExecutor
+import dataclasses
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -901,3 +902,110 @@ def imagery_concerns(o: SiteOutcome, stale_years: float, min_coverage: float, to
         if age > stale_years:
             out.append(f"google_imagery_{d}_{age:.0f}_years_old")
     return out
+
+
+# --- Re-pinning sites whose address point missed the property ---------------------------
+
+_GENERIC_WORDS = {"the", "at", "of", "on", "and", "apartments", "apartment", "apts", "apt", "homes", "residences",
+                  "luxury", "community", "phase", "i", "ii", "iii", "north", "south", "east", "west", "a", "in"}
+
+
+def _name_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if w not in _GENERIC_WORDS and len(w) > 1}
+
+
+def needs_repin(o: SiteOutcome, min_floor_m2_per_unit: float = 15.0) -> bool:
+    """The address point likely missed the property: nothing found there, no parcel at
+    the point (a street or sidewalk), too little building for the units, or two
+    buildings equally close. Sites given coordinates in the input are trusted."""
+    if o.site.lat is not None or not o.geocode:
+        return False
+    if not o.buildings or "parcel_lookup_failed:no_parcel_at_point" in o.reasons:
+        return True
+    if "building_match_uncertain" in o.manual_review:
+        return True
+    return o.floor_m2_per_unit is not None and o.floor_m2_per_unit < min_floor_m2_per_unit
+
+
+def pin_quality(o: SiteOutcome, min_floor_m2_per_unit: float = 15.0) -> int:
+    """0 nothing found, 1 something found but doubtful, 2 a plausible match."""
+    if not o.buildings:
+        return 0
+    doubtful = ("parcel_lookup_failed:no_parcel_at_point" in o.reasons
+                or "building_match_uncertain" in o.manual_review
+                or (o.floor_m2_per_unit is not None and o.floor_m2_per_unit < min_floor_m2_per_unit))
+    return 1 if doubtful else 2
+
+
+def places_point(o: SiteOutcome, places, max_shift_m: float = 1500.0, min_shift_m: float = 15.0):
+    """(lat, lon, metres moved) of the place Google lists under the property's name, or None.
+    Only a result sharing a distinctive word with the property name is used."""
+    if places is None or not o.geocode:
+        return None
+    want = _name_words(o.site.id)
+    if not want:
+        return None
+    frame = LocalFrame(o.geocode.lon, o.geocode.lat)
+    for p in places.search(f"{o.site.id}, {o.site.address}", o.geocode.lat, o.geocode.lon):
+        if not want & _name_words(p.name):
+            continue
+        d = math.hypot(*frame.point_to_local(p.lon, p.lat))
+        if min_shift_m <= d <= max_shift_m:
+            return p.lat, p.lon, d
+        return None  # the named place is where the address already points
+    return None
+
+
+def nearest_building_point(o: SiteOutcome, footprints, reach_m: float = 150.0, min_area_m2: float = 150.0):
+    """(lat, lon, metres moved) at the centre of the nearest building-sized, non-commercial
+    structure within reach_m of the address point (a pin in the street or a parking lot)."""
+    if not o.geocode:
+        return None
+    near = footprints.find({o.site.id: (o.geocode.lon, o.geocode.lat)}, search_m=reach_m, campus_m=reach_m).get(o.site.id, [])
+    have = {m.overture_id for m in o.matches}
+    for m in sorted(near, key=lambda m: m.distance_m):
+        if (m.overture_id in have or structure_kind(m) != "building" or _fp_area_m2(m.footprint) < min_area_m2
+                or (m.building_class or "") in _NONRESIDENTIAL_CLASSES):
+            continue
+        c = m.footprint.representative_point()
+        frame = LocalFrame(o.geocode.lon, o.geocode.lat)
+        return c.y, c.x, math.hypot(*frame.point_to_local(c.x, c.y))
+    return None
+
+
+def repin_sites(sites: list[Site], outcomes: list[SiteOutcome], resize, footprints, places=None,
+                min_floor_m2_per_unit: float = 15.0, progress=print) -> int:
+    """Re-size sites whose address point missed the property from a better point: the
+    place listed under the property's name (Google Places), else the nearest building.
+    `resize(sites)` sizes a list of sites; a re-sized site replaces the original only
+    if its match is better. Updates `sites` and `outcomes` in place; returns how many moved."""
+    bad = [i for i, o in enumerate(outcomes) if needs_repin(o, min_floor_m2_per_unit)]
+    if not bad:
+        return 0
+    progress(f"Re-pinning {len(bad)} sites whose address point missed the property...")
+    moved = 0
+    for source, finder in (("places", lambda o: places_point(o, places)),
+                           ("nearest_building", lambda o: nearest_building_point(o, footprints))):
+        trial, where = [], []
+        for i in bad:
+            if outcomes[i].geocode and outcomes[i].geocode.source.startswith("repin") \
+                    and pin_quality(outcomes[i], min_floor_m2_per_unit) == 2:
+                continue  # already moved to a good match by an earlier source
+            pt = finder(outcomes[i])
+            if pt:
+                lat, lon, d = pt
+                trial.append(dataclasses.replace(sites[i], lat=lat, lon=lon))
+                where.append((i, d))
+        if not trial:
+            continue
+        for (i, d), n in zip(where, resize(trial)):
+            old = outcomes[i]
+            if pin_quality(n, min_floor_m2_per_unit) <= pin_quality(old, min_floor_m2_per_unit):
+                continue
+            n.geocode = GeocodeResult(n.geocode.lat, n.geocode.lon, f"repin_{source}", "moved",
+                                      old.geocode.matched_address if old.geocode else "")
+            n.reasons.insert(0, f"repinned_by_{source}_{d:.0f}m_from_address_point")
+            outcomes[i], sites[i] = n, trial[where.index((i, d))]
+            moved += 1
+    progress(f"Re-pinned {moved} of {len(bad)}.")
+    return moved
