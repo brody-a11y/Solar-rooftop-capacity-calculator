@@ -474,10 +474,13 @@ def test_a_place_with_another_name_is_not_used(footprints):
     assert "warehouse" not in {m.overture_id for m in out[0].matches}
 
 
-def test_sites_with_input_coordinates_are_not_repinned(footprints):
+def test_input_coordinates_are_kept_unless_nothing_is_found(footprints):
     from rooftop_solar.sites import needs_repin
 
     lon, lat = ll(300, 7)
     o = size_sites([Site("Oak Grove", lat=lat, lon=lon, units=20)], footprints, GeometricEstimator(), workers=1,
                    progress=lambda *_: None)[0]
-    assert not o.buildings and not needs_repin(o)
+    assert not o.buildings and needs_repin(o)  # nothing at all there: the coordinates get a second look
+    found = size_sites([Site("Oak Grove", lat=ll(220, 7)[1], lon=ll(220, 7)[0], units=5000)], footprints,
+                       GeometricEstimator(), workers=1, progress=lambda *_: None)[0]
+    assert found.buildings and not needs_repin(found)  # too little building, but the given point is kept

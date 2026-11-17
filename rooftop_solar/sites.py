@@ -917,9 +917,12 @@ def _name_words(text: str) -> set[str]:
 def needs_repin(o: SiteOutcome, min_floor_m2_per_unit: float = 15.0) -> bool:
     """The address point likely missed the property: nothing found there, no parcel at
     the point (a street or sidewalk), too little building for the units, or two
-    buildings equally close. Sites given coordinates in the input are trusted."""
-    if o.site.lat is not None or not o.geocode:
+    buildings equally close. Coordinates given in the input are trusted unless
+    nothing at all is found there (source-system coordinates are sometimes off the lot)."""
+    if not o.geocode:
         return False
+    if o.site.lat is not None:
+        return not o.buildings and o.geocode.source == "input"
     if not o.buildings or "parcel_lookup_failed:no_parcel_at_point" in o.reasons:
         return True
     if "building_match_uncertain" in o.manual_review:
